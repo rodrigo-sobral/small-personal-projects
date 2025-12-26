@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificate Setup - Home Network</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+            text-align: center;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 40px;
+            font-size: 18px;
+            text-align: center;
+        }
+        
+        .download-section {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            color: white;
+        }
+        
+        .download-btn {
+            display: inline-block;
+            background: white;
+            color: #667eea;
+            padding: 15px 40px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 18px;
+            margin-top: 15px;
+            transition: transform 0.2s;
+        }
+        
+        .download-btn:hover {
+            transform: scale(1.05);
+        }
+        
+        .platform-section {
+            margin-bottom: 30px;
+            border: 2px solid #e9ecef;
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        
+        .platform-header {
+            background: #f8f9fa;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .platform-header:hover {
+            background: #e9ecef;
+        }
+        
+        .platform-icon {
+            font-size: 32px;
+            margin-right: 15px;
+        }
+        
+        .platform-title {
+            font-size: 22px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .platform-content {
+            padding: 20px;
+            background: white;
+        }
+        
+        .command-box {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            margin: 10px 0;
+            position: relative;
+        }
+        
+        .command-box code {
+            display: block;
+            white-space: pre;
+        }
+        
+        .copy-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .copy-btn:hover {
+            background: #5568d3;
+        }
+        
+        .step {
+            margin-bottom: 20px;
+            padding-left: 30px;
+            position: relative;
+        }
+        
+        .step-number {
+            position: absolute;
+            left: 0;
+            top: 0;
+            background: #667eea;
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .step-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        
+        .step-description {
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        
+        .note strong {
+            color: #856404;
+        }
+        
+        .services {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #e9ecef;
+        }
+        
+        .service-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            text-decoration: none;
+            transition: transform 0.2s;
+        }
+        
+        .service-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .service-name {
+            font-weight: bold;
+            font-size: 18px;
+            margin-bottom: 5px;
+        }
+        
+        .service-url {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        .mobile-link {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #e9ecef;
+        }
+        
+        .mobile-link a {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 15px 30px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        
+        .mobile-link a:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Home Network Certificate Setup</h1>
+        <p class="subtitle">Install the certificate to access your services securely</p>
+        
+        <div class="download-section">
+            <h2 style="margin-bottom: 10px;">Step 1: Download Certificate</h2>
+            <p>Click the button below to download the root certificate</p>
+            <a href="https://cert.home.arpa" class="download-btn">📥 Download Certificate</a>
+        </div>
+        
+        <h2 style="margin-bottom: 20px; color: #333;">Step 2: Install on Your Device</h2>
+        
+        <!-- Windows -->
+        <div class="platform-section">
+            <div class="platform-header">
+                <span class="platform-icon">🪟</span>
+                <span class="platform-title">Windows</span>
+            </div>
+            <div class="platform-content">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-title">Double-click the downloaded certificate</div>
+                    <div class="step-description">The certificate file is named "caddy-root-ca.crt"</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-title">Click "Install Certificate"</div>
+                    <div class="step-description">Select "Local Machine" when prompted</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-title">Choose certificate store</div>
+                    <div class="step-description">Select "Place all certificates in the following store" and browse to "Trusted Root Certification Authorities"</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-title">Complete the wizard and restart your browser</div>
+                    <div class="step-description">Click "Next" → "Finish" → Restart Chrome/Edge/Firefox</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- macOS -->
+        <div class="platform-section">
+            <div class="platform-header">
+                <span class="platform-icon">🍎</span>
+                <span class="platform-title">macOS</span>
+            </div>
+            <div class="platform-content">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-title">Double-click the downloaded certificate</div>
+                    <div class="step-description">This will open Keychain Access</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-title">Click "Add" to install the certificate</div>
+                    <div class="step-description">The certificate will be added to your login keychain</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-title">Open Keychain Access</div>
+                    <div class="step-description">Applications → Utilities → Keychain Access</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-title">Find and trust the certificate</div>
+                    <div class="step-description">Search for "Caddy Local Authority" → Double-click → Expand "Trust" → Set "When using this certificate" to "Always Trust"</div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">5</div>
+                    <div class="step-title">Enter your password when prompted</div>
+                    <div class="step-description">Close the window and restart your browser</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Linux -->
+        <div class="platform-section">
+            <div class="platform-header">
+                <span class="platform-icon">🐧</span>
+                <span class="platform-title">Linux</span>
+            </div>
+            <div class="platform-content">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-title">Download the certificate via terminal</div>
+                    <div class="command-box">
+                        <code>wget http://cert.home.arpa -O caddy-root-ca.crt</code>
+                    </div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-title">Install system-wide (Ubuntu/Debian)</div>
+                    <div class="command-box">
+                        <code>sudo cp caddy-root-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates</code>
+                    </div>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-title">Install for Firefox (if using Firefox)</div>
+                    <div class="command-box">
+                        <code>certutil -A -n "Caddy Local Authority" -t "C,," -i caddy-root-ca.crt -d sql:$HOME/.mozilla/firefox/*.default-release</code>
+                    </div>
+                </div>
+                
+                <div class="note">
+                    <strong>Note for Fedora/RHEL:</strong> Use <code>sudo cp caddy-root-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust</code>
+                </div>
+            </div>
+        </div>
+        
+        <h2 style="margin-top: 40px; margin-bottom: 20px; color: #333; text-align: center;">Your Home Services</h2>
+        <div class="services">
+            <a href="https://vaultwarden.home.arpa" class="service-card" target="_blank">
+                <div class="service-name">🔐 Vaultwarden</div>
+                <div class="service-url">vaultwarden.home.arpa</div>
+            </a>
+            <a href="https://octoprint.home.arpa" class="service-card" target="_blank">
+                <div class="service-name">🖨️ OctoPrint</div>
+                <div class="service-url">octoprint.home.arpa</div>
+            </a>
+            <a href="https://pihole.home.arpa/admin/login" class="service-card" target="_blank">
+                <div class="service-name">🛡️ Pi-hole</div>
+                <div class="service-url">pihole.home.arpa</div>
+            </a>
+        </div>
+        
+        <div class="mobile-link">
+            <p style="color: #666; margin-bottom: 15px;">Setting up a mobile device?</p>
+            <a href="http://qr.home.arpa">📱 Scan QR Code for Mobile</a>
+        </div>
+    </div>
+</body>
+</html>

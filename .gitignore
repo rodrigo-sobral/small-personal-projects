@@ -17,3 +17,7 @@ Rust/*/target
 # Others
 Python/Flyordie/test.py
 .DS_Store
+
+# raspi project
+raspi/www/qr-code.png
+raspi/www/root.crt

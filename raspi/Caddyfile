@@ -1,0 +1,83 @@
+{
+    # Use local CA for internal certificates
+    local_certs
+}
+
+# Certificate download endpoint
+cert.home.arpa {
+    root * /data/caddy/pki/authorities/local
+    file_server
+    
+    header {
+        Content-Type "application/x-pem-file"
+        Content-Disposition "attachment; filename=caddy-root-ca.crt"
+    }
+    
+    rewrite * /root.crt
+}
+
+# QR Code page for mobile devices
+qr.home.arpa {
+    root * /config/www
+    file_server
+    
+    templates
+    
+    handle / {
+        rewrite * /qr.html
+    }
+}
+
+# Setup instructions page
+setup.home.arpa {
+    root * /config/www
+    file_server
+    
+    templates
+    
+    handle / {
+        rewrite * /setup.html
+    }
+}
+
+# Vaultwarden
+vaultwarden.home.arpa {
+    reverse_proxy vaultwarden:80
+    encode gzip
+    log {
+        output file /data/vaultwarden_access.log
+        format json
+    }
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+    }
+}
+
+# OctoPrint
+octoprint.home.arpa {
+    # Webcam stream (MJPG)
+    handle_path /webcam/* {
+        reverse_proxy octoprint:8080
+    }
+
+    # OctoPrint UI
+    reverse_proxy octoprint:5000
+    encode gzip
+    log {
+        output file /data/octoprint_access.log
+        format json
+    }
+}
+
+# Pi-hole
+pihole.home.arpa {
+    reverse_proxy pihole:80
+    encode gzip
+    log {
+        output file /data/pihole_access.log
+        format json
+    }
+}
