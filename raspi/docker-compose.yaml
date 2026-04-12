@@ -237,6 +237,17 @@ services:
     cap_drop:
       - ALL
 
+  # Watchtower for automatic updates of the scheduler bot every 24 hours
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 86400 --cleanup --label-enable --include-stopped scheduler_bot
+    restart: "no"
+    networks:
+      - web
+
   caddy:
     <<: *defaults
     image: caddy:2-alpine
