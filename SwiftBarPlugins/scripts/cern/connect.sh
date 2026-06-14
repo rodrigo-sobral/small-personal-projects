@@ -1,49 +1,47 @@
 #!/bin/bash
+set -e
 
-read -r ENABLE_PROXY_SCRIPT AUTOSSH_SCRIPT PROXY_PORT SSH_HOST SSH_USER BW_EMAIL SSH_CONN_PIDS <<< "$1 $2 $3 $4 $5 $6 $7"
+read -r ENABLE_PROXY_SCRIPT AUTOSSH_SCRIPT PROXY_PORT SSH_HOST BW_CERN_ID_VAL BW_CLIENTID_VAL BW_CLIENTSECRET_VAL SSH_CONN_PIDS <<< "$1 $2 $3 $4 $5 $6 $7 $8"
 
-# Create a function to get password from user
-get_bwpass() {
-    echo -n "Enter Bitwarden master password: "
-    read -s MASTERPW && printf "\n"
+export BW_CERN_ID="$BW_CERN_ID_VAL"
+export BW_CLIENTID="$BW_CLIENTID_VAL"
+export BW_CLIENTSECRET="$BW_CLIENTSECRET_VAL"
+
+# 1. Handle Bitwarden Authentication via API Key
+if ! bw login --check >/dev/null 2>&1; then
+    bw login --apikey >/dev/null
+fi
+
+# 2. Handle Vault Unlock & Session Management
+_unlock_vault() {
+    export BW_SESSION="$(bw unlock --raw)"
+    echo "$BW_SESSION" > "$HOME/.bw_session"
+    chmod 600 "$HOME/.bw_session"
+    echo "Vault unlocked and session saved"
 }
 
-# Load existing session if it exists
-if [ -f "$HOME/.bw_session" ]; then
+# Load existing session from file if BW_SESSION isn't already set
+if [ -z "$BW_SESSION" ] && [ -f "$HOME/.bw_session" ]; then
     export BW_SESSION="$(cat "$HOME/.bw_session")"
 fi
 
-# Check if the user is logged in
-bw login --check
-if [ $? -ne 0 ]; then
-    get_bwpass
-    BW_PASS="$MASTERPW" bw login "$BW_EMAIL" --passwordenv BW_PASS
-    echo "Logged in to Bitwarden"
+# Validate session with a lightweight, non-interactive call
+# `bw list folders` is fast and never prompts — it just fails with exit code 1 if session is invalid
+if ! bw list folders --session "$BW_SESSION" >/dev/null 2>&1; then
+    _unlock_vault
 fi
 
-# Check if the session is unlocked (this requires BW_SESSION to be set)
-bw unlock --check --session "$BW_SESSION" 2>/dev/null
-if [ $? -ne 0 ]; then
-    if [ -z "$MASTERPW" ]; then
-        get_bwpass
-    fi
-    export BW_SESSION="$(BW_PASS="$MASTERPW" bw unlock --passwordenv BW_PASS --raw)"
-    echo "$BW_SESSION" > "$HOME/.bw_session"
-    echo "Session unlocked and saved"
-fi
+# Now sync with the confirmed-valid session
+bw sync --session "$BW_SESSION" >/dev/null
 
-# Unset BW_PASS and MASTERPW
-unset BW_PASS MASTERPW
+# 3. Retrieve Credentials
+ssh_pass=$(bw get password "$BW_CERN_ID" --session "$BW_SESSION" | base64)
+ssh_totp=$(bw get totp "$BW_CERN_ID" --session "$BW_SESSION" | base64)
 
-# Pull latest items
-bw sync --session "$BW_SESSION"
-
-# Get the password
-ssh_pass=$(echo $(bw get password login.cern.ch --session "$BW_SESSION") | base64)
-
-# Enable Proxy
+# 4. Network and Proxy Setup
 $ENABLE_PROXY_SCRIPT $PROXY_PORT
 
-if [ ! -n "$SSH_CONN_PIDS" ]; then
-    $AUTOSSH_SCRIPT $ssh_pass ssh -D $PROXY_PORT $SSH_HOST
+# 5. SSH into the machine
+if [ -z "$SSH_CONN_PIDS" ]; then
+    $AUTOSSH_SCRIPT "$ssh_pass" "$ssh_totp" ssh -D "$PROXY_PORT" "$SSH_HOST"
 fi

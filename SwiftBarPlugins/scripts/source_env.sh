@@ -17,7 +17,7 @@ source "$PLUGIN_PATH/.env"
 if [ $PLUGIN == "raspi" ]; then
     required_vars=("SSH_USER" "SSH_HOST" "SSH_KEY_PATH")
 elif [ $PLUGIN == "cern" ]; then
-    required_vars=("SSH_USER" "SSH_HOST" "PROXY_PORT" "BW_EMAIL")
+    required_vars=("SSH_HOST" "PROXY_PORT" "BW_CERN_ID" "BW_CLIENTID" "BW_CLIENTSECRET")
 fi
 
 # Validate required variables

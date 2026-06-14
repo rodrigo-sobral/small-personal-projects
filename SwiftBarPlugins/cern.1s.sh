@@ -51,7 +51,7 @@ echo "---"
 
 # --- Options Display ---
 if [[ "$status" == "👎🏿" || "$proxy_status" == "👎🏿" ]]; then
-    echo "Connect All | bash='$CONNECT_SCRIPT' param1='$ENABLE_PROXY_SCRIPT' param2='$AUTOSSH_SCRIPT' param3='$PROXY_PORT' param4='$SSH_HOST' param5='$SSH_USER' param6='$BW_EMAIL' param7='$SSH_CONN_PIDS' terminal=true refresh=true"
+    echo "Connect All | bash='$CONNECT_SCRIPT' param1='$ENABLE_PROXY_SCRIPT' param2='$AUTOSSH_SCRIPT' param3='$PROXY_PORT' param4='$SSH_HOST' param5='$BW_CERN_ID' param6='$BW_CLIENTID' param7='$BW_CLIENTSECRET' param8='$SSH_CONN_PIDS' terminal=true refresh=true"
     if [ "$status" == "👍🏻" ]; then
         echo "Disconnect Socket | bash='$DISCONNECT_SCRIPT' param1='$DISABLE_PROXY_SCRIPT' param2='$PROXY_PORT' param3='$SSH_SOCKET_PIDS $SSH_CONN_PIDS' terminal=false refresh=true"
     fi

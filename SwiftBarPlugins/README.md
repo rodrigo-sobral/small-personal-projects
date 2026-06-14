@@ -53,9 +53,10 @@ Both plugins require environment variables to be configured. Create `.env` files
 # scripts/cern/.env
 
 PROXY_PORT=          # Port number for SOCKS proxy (e.g., 9999)
-SSH_USER=            # SSH username for CERN host
 SSH_HOST=            # CERN hostname (e.g., lxplus.cern.ch)
-BW_EMAIL=            # Bitwarden account email for credential retrieval
+BW_CERN_ID=          # Bitwarden item ID for CERN credentials
+BW_CLIENTID=         # Bitwarden Client ID for API key authentication
+BW_CLIENTSECRET=     # Bitwarden Client Secret for API key authentication
 
 # scripts/raspi/.env
 
