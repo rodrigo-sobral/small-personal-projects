@@ -26,6 +26,9 @@ python/flyordie/assets/flyordie.png
 # raspi project
 raspi/www/qr-code.png
 raspi/www/root.crt
+raspi/grafana
+raspi/uptime-kuma
+raspi/traefik/certs
 
 # Others
 .DS_Store

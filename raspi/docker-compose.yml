@@ -1,0 +1,586 @@
+x-defaults: &defaults
+  restart: unless-stopped
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+networks:
+  # Bridge network Traefik and every reverse-proxied service sit on
+  web:
+    name: web
+  # Internal-only network for backend databases/caches (no direct exposure)
+  backend:
+    name: backend
+    internal: true
+
+volumes:
+  tailscale_data:
+  postgres_data:
+  vaultwarden_data:
+  octoprint_data:
+  pihole_data:
+  pihole_dnsmasq:
+  scheduler_data:
+  scheduler_logs:
+  nextcloud_html:
+  nextcloud_apps:
+  nextcloud_config:
+  nextcloud_data:
+  nextcloud_db:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  uptime_kuma_data:
+
+services:
+  # ==========================================================================
+  # REMOTE ACCESS
+  # ==========================================================================
+  tailscale:
+    <<: *defaults
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: raspi-server
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_STATE_DIR: /var/lib/tailscale
+      # Advertises the whole LAN to the tailnet, so remote devices (like your
+      # Mac when it's not on the home Wi-Fi) can reach Pi-hole's real LAN IP
+      # through the tunnel. Requires one manual approval step in the
+      # Tailscale admin console after first boot - see README.
+      TS_ROUTES: ${LOCAL_SUBNET}
+      TS_EXTRA_ARGS: --reset
+    volumes:
+      - tailscale_data:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+
+  # ==========================================================================
+  # INGRESS - single reverse proxy for the whole stack, TLS terminates here
+  # ==========================================================================
+  traefik:
+    <<: *defaults
+    image: traefik:v3.1
+    container_name: traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=web"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--api.dashboard=true"
+      - "--log.level=INFO"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/certs:/certs:ro
+    networks:
+      - web
+    extra_hosts:
+      # Lets containers on the "web" network reach the host itself, needed to
+      # route to host-networked Pi-hole (see the pihole service below).
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - "traefik.enable=true"
+      # --- dashboard, protected with basic auth, internal use only ---
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls=true"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
+
+  # ==========================================================================
+  # PASSWORD MANAGER
+  # ==========================================================================
+  vaultwarden_db:
+    <<: *defaults
+    image: postgres:15-alpine
+    container_name: vaultwarden_db
+    environment:
+      TZ: ${TZ}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: vaultwarden
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d vaultwarden"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+
+  vaultwarden:
+    <<: *defaults
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    depends_on:
+      vaultwarden_db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@vaultwarden_db:5432/vaultwarden
+      ROCKET_ADDRESS: 0.0.0.0
+      ROCKET_WORKERS: 4
+      DOMAIN: "https://vaultwarden.${DOMAIN_BASE}"
+      ADMIN_TOKEN: ${VAULTWARDEN_ADMIN_TOKEN}
+      JWT_SECRET: ${VAULTWARDEN_JWT_SECRET}
+      LOG_FILE: /data/vaultwarden.log
+    volumes:
+      - vaultwarden_data:/data
+    networks:
+      - web
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.vaultwarden.rule=Host(`vaultwarden.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.vaultwarden.entrypoints=websecure"
+      - "traefik.http.routers.vaultwarden.tls=true"
+      - "traefik.http.services.vaultwarden.loadbalancer.server.port=80"
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/alive || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+
+  # ==========================================================================
+  # 3D PRINTER MANAGEMENT
+  # ==========================================================================
+  octoprint:
+    <<: *defaults
+    image: octoprint/octoprint:latest
+    container_name: octoprint
+    environment:
+      TZ: ${TZ}
+      OCTOPRINT_USER: ${OCTOPRINT_USER}
+      OCTOPRINT_PASS: ${OCTOPRINT_PASS}
+      ENABLE_MJPG_STREAMER: true
+      MJPG_STREAMER_INPUT: "-r 640x480 -f 10 -y"
+    volumes:
+      - octoprint_data:/octoprint
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.octoprint.rule=Host(`octoprint.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.octoprint.entrypoints=websecure"
+      - "traefik.http.routers.octoprint.tls=true"
+      - "traefik.http.services.octoprint.loadbalancer.server.port=5000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --fail http://127.0.0.1:5000 || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+    # Uncomment when printer is connected
+    # devices:
+      # - /dev/ttyUSB0:/dev/ttyUSB0
+      # - /dev/video0:/dev/video0
+
+  # ==========================================================================
+  # DNS / AD-BLOCKING / DHCP
+  # ==========================================================================
+  pihole:
+    <<: *defaults
+    container_name: pihole
+    image: pihole/pihole:latest
+    hostname: pihole
+    # Host networking, not macvlan: macvlan gives Pi-hole its own virtual MAC,
+    # which most Wi-Fi APs silently drop (no 4-address/WDS mode on consumer
+    # routers). Host mode reuses the Pi's own already-working interface, so
+    # DHCP/DNS broadcast and outbound fetches work over Wi-Fi or Ethernet.
+    network_mode: host
+    environment:
+      TZ: ${TZ}
+      FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD}
+      FTLCONF_dns_listeningMode: "all"
+      FTLCONF_dns_upstreams: "${PIHOLE_UPSTREAM_DNS_1};${PIHOLE_UPSTREAM_DNS_2}"
+      # Web UI moved off :80 since Traefik already owns host port 80/443.
+      FTLCONF_webserver_port: "8081o"
+      # DHCP server - Pi-hole becomes the LAN's DHCP + DNS authority
+      FTLCONF_dhcp_active: "true"
+      FTLCONF_dhcp_start: ${PIHOLE_DHCP_START}
+      FTLCONF_dhcp_end: ${PIHOLE_DHCP_END}
+      FTLCONF_dhcp_router: ${PIHOLE_DHCP_ROUTER}
+      FTLCONF_dhcp_netmask: ${PIHOLE_DHCP_NETMASK}
+      # Local DNS Records - every *.home.arpa hostname pointed at the Pi's
+      # own LAN IP, so you never have to add these by hand in the admin UI.
+      # Semicolon-separated, same convention as dns_upstreams above; each
+      # entry is "IP hostname" (classic /etc/hosts syntax).
+      FTLCONF_dns_hosts: >-
+        ${SERVER_LAN_IP} ${DOMAIN_BASE};
+        ${SERVER_LAN_IP} portal.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} vaultwarden.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} octoprint.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} pihole.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} nextcloud.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} grafana.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} status.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} traefik.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} prometheus.${DOMAIN_BASE}
+    volumes:
+      - pihole_data:/etc/pihole
+      - pihole_dnsmasq:/etc/dnsmasq.d
+    cap_add:
+      - NET_ADMIN   # required for DHCP server
+      - SYS_TIME    # required for NTP client
+      - SYS_NICE    # extra scheduling priority for FTL
+    # No Traefik labels here: host-networked containers aren't reachable via
+    # Traefik's docker-label auto-discovery (no docker-network IP to route
+    # to). Traefik routes to it via a static file-provider entry instead -
+    # see traefik/dynamic/pihole.yml.
+    healthcheck:
+      test: ["CMD-SHELL", "pihole status || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+
+  # Exposes Pi-hole's block stats (queries blocked, % blocked, top blocked
+  # domains) to Prometheus - the blackbox probe above only knows "is the
+  # admin UI up", not "is it actually blocking anything".
+  pihole-exporter:
+    <<: *defaults
+    image: ekofr/pihole-exporter:latest
+    container_name: pihole-exporter
+    environment:
+      PIHOLE_HOSTNAME: "host.docker.internal:8081"
+      PIHOLE_PASSWORD: ${PIHOLE_PASSWORD}
+      INTERVAL: 30s
+      PORT: "9617"
+    networks:
+      - web
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - pihole
+
+  # ==========================================================================
+  # DISCORD SCHEDULER BOT
+  # ==========================================================================
+  scheduler-bot:
+    <<: *defaults
+    image: ghcr.io/${GITHUB_USERNAME}/scheduler-discord-bot:latest
+    container_name: scheduler_bot
+    user: "1000:1000"
+    environment:
+      TZ: ${TZ}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      BOT_TOKEN: ${BOT_TOKEN}
+      DATABASE_URL: ${BOT_DATABASE_URL}
+      ENVIRONMENT: ${BOT_ENVIRONMENT}
+      LOG_LEVEL: ${BOT_LOG_LEVEL}
+    volumes:
+      - scheduler_data:/app/db
+      - scheduler_logs:/app/logs
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+        reservations:
+          cpus: "0.50"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 86400 --cleanup --label-enable
+    restart: "no"
+    networks:
+      - web
+
+  # ==========================================================================
+  # NEXTCLOUD (files, calendar, mail)
+  # ==========================================================================
+  nextcloud:
+    <<: *defaults
+    image: nextcloud:latest
+    container_name: nextcloud
+    depends_on:
+      nextclouddb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - web
+      - backend
+    volumes:
+      - nextcloud_html:/var/www/html
+      - nextcloud_apps:/var/www/html/custom_apps
+      - nextcloud_config:/var/www/html/config
+      - nextcloud_data:/var/www/html/data
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ}
+      MYSQL_HOST: nextclouddb
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud.${DOMAIN_BASE}
+      OVERWRITEPROTOCOL: https
+      OVERWRITECLIURL: https://nextcloud.${DOMAIN_BASE}
+      REDIS_HOST: redis
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.nextcloud.rule=Host(`nextcloud.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.routers.nextcloud.tls=true"
+      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --fail http://127.0.0.1:80/status.php || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+  nextclouddb:
+    <<: *defaults
+    image: mariadb:latest
+    container_name: nextcloud-db
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    networks:
+      - backend
+    volumes:
+      - nextcloud_db:/var/lib/mysql
+    environment:
+      TZ: ${TZ}
+      MYSQL_ROOT_PASSWORD: ${NEXTCLOUD_DB_ROOT_PASSWORD}
+      MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    <<: *defaults
+    image: redis:alpine
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+
+  # Optional: online office suite for Nextcloud. Not exposed via Traefik yet -
+  # it wasn't in the required browser-access list. Ask if you'd like it public too.
+  collabora:
+    <<: *defaults
+    image: collabora/code
+    container_name: collabora
+    networks:
+      - backend
+    environment:
+      TZ: ${TZ}
+      username: ${COLLABORA_ADMIN_USER}
+      password: ${COLLABORA_ADMIN_PASSWORD}
+      domain: nextcloud\\.${DOMAIN_BASE}
+      extra_params: --o:ssl.enable=false --o:ssl.termination=true
+
+  # ==========================================================================
+  # MONITORING - Prometheus + Grafana + exporters
+  # ==========================================================================
+  prometheus:
+    <<: *defaults
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.tls=true"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+      - "traefik.http.routers.prometheus.middlewares=monitoring-auth"
+      - "traefik.http.middlewares.monitoring-auth.basicauth.users=${MONITORING_AUTH}"
+
+  cadvisor:
+    <<: *defaults
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      - web
+    privileged: true
+
+  node-exporter:
+    <<: *defaults
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    networks:
+      - web
+
+  blackbox-exporter:
+    <<: *defaults
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox-exporter
+    volumes:
+      - ./monitoring/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    networks:
+      - web
+    extra_hosts:
+      # Containers don't use Pi-hole as their resolver, so *.home.arpa means
+      # nothing to them by default. Point every probed host at the Docker
+      # host's gateway IP instead - that's where Traefik's published 80/443
+      # actually listen, so this resolves correctly independent of whatever
+      # DNS setup exists on the LAN.
+      - "vaultwarden.home.arpa:host-gateway"
+      - "octoprint.home.arpa:host-gateway"
+      - "pihole.home.arpa:host-gateway"
+      - "nextcloud.home.arpa:host-gateway"
+      - "portal.home.arpa:host-gateway"
+      - "grafana.home.arpa:host-gateway"
+
+  grafana:
+    <<: *defaults
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      TZ: ${TZ}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: "https://grafana.${DOMAIN_BASE}"
+      # Anonymous viewer access so the portal can embed panels without a login
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_COOKIE_SAMESITE: "disabled"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  # Simple public status page - the "is it up, at a glance" view. Complements
+  # Grafana, which is more for digging into telemetry than a quick check.
+  uptime-kuma:
+    <<: *defaults
+    image: louislam/uptime-kuma:2.4.0
+    container_name: uptime-kuma
+    volumes:
+      - uptime_kuma_data:/app/data
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.uptime-kuma.rule=Host(`status.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.uptime-kuma.entrypoints=websecure"
+      - "traefik.http.routers.uptime-kuma.tls=true"
+      - "traefik.http.services.uptime-kuma.loadbalancer.server.port=3001"
+
+  # ==========================================================================
+  # PORTAL - single-page hub: service gallery, setup guide, health dashboard
+  # ==========================================================================
+  portal:
+    <<: *defaults
+    image: nginx:alpine
+    container_name: portal
+    volumes:
+      - ./portal/src:/usr/share/nginx/html:ro
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.portal.rule=Host(`portal.${DOMAIN_BASE}`) || Host(`${DOMAIN_BASE}`)"
+      - "traefik.http.routers.portal.entrypoints=websecure"
+      - "traefik.http.routers.portal.tls=true"
+      - "traefik.http.services.portal.loadbalancer.server.port=80"

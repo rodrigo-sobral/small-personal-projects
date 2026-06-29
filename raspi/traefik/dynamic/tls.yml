@@ -1,0 +1,9 @@
+tls:
+  certificates:
+    - certFile: /certs/home.arpa.crt
+      keyFile: /certs/home.arpa.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/home.arpa.crt
+        keyFile: /certs/home.arpa.key

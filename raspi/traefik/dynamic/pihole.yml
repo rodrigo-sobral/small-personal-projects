@@ -1,0 +1,16 @@
+http:
+  routers:
+    pihole:
+      rule: "Host(`pihole.home.arpa`)"
+      entrypoints:
+        - websecure
+      service: pihole
+      tls: {}
+  services:
+    pihole:
+      loadBalancer:
+        servers:
+          # Pi-hole runs with network_mode: host and its web UI on :8081
+          # (see docker-compose.yml). host.docker.internal resolves to the
+          # Docker host thanks to the extra_hosts entry on the traefik service.
+          - url: "http://host.docker.internal:8081"
