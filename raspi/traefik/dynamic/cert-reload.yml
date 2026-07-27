@@ -1,0 +1,24 @@
+# Written by scripts/maintenance/renew-certs.sh - not hand-maintained.
+#
+# Its only job is to make Traefik reload. Rewriting a file in the watched
+# dynamic directory makes Traefik re-parse everything, which re-reads the
+# certificate files referenced by tls.yml - that's how a renewed leaf gets
+# served without restarting the container.
+#
+# Two things this file has to get right, both learned the hard way:
+#
+#  1. It must be VALID dynamic config. An empty 'http: {}' is rejected
+#     ("http cannot be a standalone element") and Traefik aborts the whole
+#     reload, silently leaving the old certificate in place. So this declares
+#     a real - if unused - middleware.
+#  2. Its CONTENT must change each time, not just its mtime. The timestamp in
+#     the header value below does that, so Traefik can't treat the new
+#     configuration as identical to the old one and skip it.
+#
+# Nothing routes through this middleware; it exists to be parsed.
+http:
+  middlewares:
+    cert-reload-marker:
+      headers:
+        customResponseHeaders:
+          X-Cert-Renewed: "2026-09-12T23:10:33Z"

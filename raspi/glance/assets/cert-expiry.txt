@@ -1,0 +1,12 @@
+Leaf certificate for *.home.arpa
+  expires:     Dec 15 23:10:32 2028 GMT
+  regenerated: 2026-09-12 23:10:33 UTC
+
+Renewal is automatic: the 'cert-renew' service checks daily and reissues this
+leaf once it's inside its renewal window, then nudges Traefik to reload it.
+To force one now:
+  ./scripts/maintenance/renew-certs.sh --force
+
+The root CA is separate and good for 3650 days from creation. Renewing the
+leaf does NOT touch it, which is why your devices only ever install rootCA.pem
+once - no matter how many times the leaf rotates.
