@@ -3,6 +3,7 @@
 
 # Python config folders
 *__pycache__*
+*.pytest_cache
 
 # Enviroments
 *.env
@@ -11,13 +12,20 @@
 *logs
 *.log
 
-# Rust build folders
-Rust/*/target
-
-# Others
-Python/Flyordie/test.py
-.DS_Store
+# Flyordie
+python/flyordie/players
+python/flyordie/logs
+python/flyordie/.venv
+python/flyordie/.ruff_cache
+python/flyordie/build
+python/flyordie/dist
+python/flyordie/assets/flyordie.icns
+python/flyordie/assets/flyordie.ico
+python/flyordie/assets/flyordie.png
 
 # raspi project
 raspi/www/qr-code.png
 raspi/www/root.crt
+
+# Others
+.DS_Store

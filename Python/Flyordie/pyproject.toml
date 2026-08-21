@@ -1,36 +1,44 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
 name = "flyordie"
-version = "0.1.0"
-description = "Fly or Die - A web scraping and notification tool"
-readme = "README.md"
-requires-python = ">=3.8"
+version = "1.0.0"
+description = "A modern desktop viewer and Elo simulator for public FlyOrDie player statistics."
+requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [
-    {name = "Rodrigo", email = ""}
-]
+authors = [{name = "Rodrigo"}]
 dependencies = [
-    "beautifulsoup4>=4.11.2",
-    "requests>=2.32.4",
-    "pillow>=10.2.0",
-    "termcolor>=2.2.0",
-    "xmltodict>=0.13.0",
+    "beautifulsoup4>=4.12",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+    "requests>=2.32",
 ]
+
+[project.scripts]
+flyordie = "flyordie.app:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [dependency-groups]
 dev = [
-    "black",
-    "ruff",
-    "mypy",
+    "pyinstaller>=6.10",
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "watchfiles>=1.2.0",
 ]
 
-[tool.black]
-line-length = 100
-target-version = ["py38", "py39", "py310", "py311"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/flyordie"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"assets" = "flyordie/assets"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py310"
