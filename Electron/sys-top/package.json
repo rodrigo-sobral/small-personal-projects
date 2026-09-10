@@ -14,7 +14,7 @@
   "author": "Rodrigo Sobral",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^13.6.6",
+    "electron": "^39.8.10",
     "electron-packager": "^16.0.0",
     "nodemon": "^2.0.3"
   },
