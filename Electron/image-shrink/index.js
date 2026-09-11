@@ -1,10 +1,7 @@
 const path = require('path');
 const os = require('os');
 const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
-const imagemin = require('imagemin');
-const imageminMozjpeg = require('imagemin-mozjpeg');
-const imageminPngquant = require('imagemin-pngquant');
-const slash = require('slash');
+const sharp = require('sharp');
 const log = require('electron-log');
 
 // Set Environment
@@ -83,21 +80,31 @@ ipcMain.on("image:minimize", (e, options) => {
 
 async function shrinkImage({ imgPath, quality, dest }) {
     try {
-        const pngQuality = parseFloat(quality) / 100;
-        const files = await imagemin([slash(imgPath)], {
-            destination: dest,
-            plugins: [
-                imageminMozjpeg({ quality: parseInt(quality) }),
-                imageminPngquant({
-                    quality: [pngQuality, pngQuality]
-                })
-            ]
-        });
-        log.info("Image minimized successfully:", files);
+        const outputPath = path.join(dest, path.basename(imgPath));
+        const image = sharp(imgPath);
+        const metadata = await image.metadata();
+        const imageQuality = parseInt(quality, 10);
+
+        if (metadata.format === 'jpeg') {
+            await image
+                .jpeg({ quality: imageQuality })
+                .toFile(outputPath);
+        } else if (metadata.format === 'png') {
+            await image
+                .png({ quality: imageQuality, compressionLevel: 9 })
+                .toFile(outputPath);
+        } else {
+            throw new Error(`Unsupported image format: ${metadata.format || 'unknown'}`);
+        }
+
+        log.info("Image minimized successfully:", outputPath);
         shell.openPath(dest);
         mainWindow.webContents.send("image:minimize:response", { success: true });
     } catch (error) {
-        mainWindow.webContents.send("image:minimize:response", { success: false, error: error.message });
+        mainWindow.webContents.send("image:minimize:response", {
+            success: false,
+            error: error.message
+        });
         log.error("Error minimizing image:", error);
     }
 }
