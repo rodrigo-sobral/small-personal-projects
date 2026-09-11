@@ -2,31 +2,31 @@ version: 2
 
 updates:
   - package-ecosystem: npm
-    directories:
-      - /Electron/bug-logger
-      - /Electron/image-shrink
-      - /Electron/sys-top
+    directory: /Electron/bug-logger
     schedule:
       interval: weekly
-
     groups:
-      non-major:
+      dependencies:
         update-types:
           - minor
           - patch
 
-      development-dependencies:
-        dependency-type: development
+  - package-ecosystem: npm
+    directory: /Electron/image-shrink
+    schedule:
+      interval: weekly
+    groups:
+      dependencies:
         update-types:
           - minor
           - patch
 
-      production-dependencies:
-        dependency-type: production
+  - package-ecosystem: npm
+    directory: /Electron/sys-top
+    schedule:
+      interval: weekly
+    groups:
+      dependencies:
         update-types:
           - minor
           - patch
-
-      major:
-        update-types:
-          - major
