@@ -19,7 +19,7 @@
     "nodemon": "^3.1.14"
   },
   "dependencies": {
-    "electron-log": "^4.1.2",
+    "electron-log": "^5.4.4",
     "node-os-utils": "^2.0.5"
   }
 }
