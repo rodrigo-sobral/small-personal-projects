@@ -27,7 +27,7 @@
     "react": "^18.2.0",
     "react-bootstrap": "^2.9.1",
     "react-dom": "^19.2.8",
-    "react-moment": "^1.1.2"
+    "react-moment": "^2.0.2"
   },
   "devDependencies": {
     "@babel/core": "^7.24.5",
