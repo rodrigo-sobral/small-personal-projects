@@ -6,8 +6,7 @@
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0",
-    "npm": ">=8.0.0",
-    "yarn": ">=1.0.0"
+    "npm": ">=8.0.0"
   },
   "browserslist": [
     "last 4 versions"
