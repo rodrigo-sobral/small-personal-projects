@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Detects this machine's real LAN-facing IP and writes it into .env as
 # SERVER_LAN_IP. Run standalone any time (e.g. after moving the Pi to a new
-# network) or let setup.sh call it automatically on every run.
+# network) or let 01_setup.sh call it automatically on every run.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,8 +32,6 @@ if [[ -z "$DETECTED_IP" ]]; then
   echo "Couldn't auto-detect a LAN IP. Set SERVER_LAN_IP manually in .env." >&2
   exit 1
 fi
-
-echo "==> Detected LAN IP: $DETECTED_IP"
 
 if [[ ! -f .env ]]; then
   echo "No .env found - copy .env.example to .env first." >&2

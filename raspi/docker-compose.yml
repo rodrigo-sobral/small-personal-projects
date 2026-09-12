@@ -17,7 +17,7 @@ networks:
 
 volumes:
   tailscale_data:
-  postgres_data:
+  vaultwarden_db:
   vaultwarden_data:
   octoprint_data:
   pihole_data:
@@ -30,9 +30,29 @@ volumes:
   nextcloud_data:
   nextcloud_db:
   redis_data:
-  prometheus_data:
-  grafana_data:
-  uptime_kuma_data:
+  authentik_db:
+  authentik_media:
+  authentik_certs:
+  authentik_templates:
+  immich_db:
+  jellyfin_config:
+  jellyfin_cache:
+  minecraft_data:
+  stirling_configs:
+  stirling_tessdata:
+  stirling_logs:
+  stirling_pipeline:
+  onlyoffice_data:
+  onlyoffice_logs:
+  onlyoffice_cache:
+  beszel_data:
+  beszel_agent_data:
+  # Shared between the Beszel hub and agent: the agent listens on a unix
+  # socket in here instead of a TCP port, so nothing extra is exposed.
+  beszel_socket:
+  # AI assistant: Ollama's model store and Open WebUI's database/uploads.
+  ollama_data:
+  openwebui_data:
 
 services:
   # ==========================================================================
@@ -78,6 +98,13 @@ services:
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Separate unpublished entrypoint on :8082 for /ping only. The `web`
+      # entrypoint redirects everything to HTTPS, so a check there would only
+      # ever see a 301. Not in `ports:`, so it's reachable from the `web`
+      # network and nowhere else.
+      - "--entrypoints.ping.address=:8082"
+      - "--ping=true"
+      - "--ping.entrypoint=ping"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
       - "--api.dashboard=true"
@@ -105,23 +132,176 @@ services:
       - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
       - "traefik.http.routers.traefik-dashboard.tls=true"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      # Basic auth, not Authentik: the dashboard is the thing you need when
+      # Authentik won't start.
       - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ==========================================================================
+  # IDENTITY / SINGLE SIGN-ON - Authentik
+  #
+  # Becomes Traefik's forward-auth provider once configured: a login at
+  # auth.${DOMAIN_BASE} can gate any other router. The middleware lives in
+  # traefik/dynamic/authentik.yml and is NOT attached to anything by default -
+  # attaching it before Authentik is configured would lock you out.
+  # No Redis: Postgres backs cache and task queue (since 2025.8).
+  # ==========================================================================
+  authentik-db:
+    <<: *defaults
+    image: postgres:16-alpine
+    container_name: authentik-db
+    # shared_buffers defaults to 128 MB per instance; with several databases on
+    # an 8 GB Pi that's wasteful. It's only a cache, so shrinking it trades a
+    # little cache hit rate for RAM. max_connections is similarly oversized.
+    command:
+      - postgres
+      - "-c"
+      - "shared_buffers=32MB"
+      - "-c"
+      - "max_connections=30"
+      - "-c"
+      - "work_mem=2MB"
+    environment:
+      TZ: ${TZ}
+      POSTGRES_DB: authentik
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - authentik_db:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d authentik"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+
+  authentik-server:
+    <<: *defaults
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    container_name: authentik-server
+    command: server
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+    environment: &authentik-env
+      TZ: ${TZ}
+      # Without this, browser redirects fall back to http://localhost.
+      AUTHENTIK_WEB__BASE_URL: https://auth.${DOMAIN_BASE}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-db
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASSWORD}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      # One gunicorn worker: each is a full Python process (~260 MB). Raise if
+      # you ever see requests queueing.
+      AUTHENTIK_WEB__WORKERS: "1"
+      # Read by authentik/blueprints/homelab.yaml. The blueprint builds every
+      # host/redirect URI from DOMAIN_BASE; the OIDC pairs stay in .env.
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      IMMICH_OIDC_CLIENT_ID: ${IMMICH_OIDC_CLIENT_ID}
+      IMMICH_OIDC_CLIENT_SECRET: ${IMMICH_OIDC_CLIENT_SECRET}
+      NEXTCLOUD_OIDC_CLIENT_ID: ${NEXTCLOUD_OIDC_CLIENT_ID}
+      NEXTCLOUD_OIDC_CLIENT_SECRET: ${NEXTCLOUD_OIDC_CLIENT_SECRET}
+      JELLYFIN_OIDC_CLIENT_ID: ${JELLYFIN_OIDC_CLIENT_ID}
+      JELLYFIN_OIDC_CLIENT_SECRET: ${JELLYFIN_OIDC_CLIENT_SECRET}
+      BESZEL_OIDC_CLIENT_ID: ${BESZEL_OIDC_CLIENT_ID}
+      BESZEL_OIDC_CLIENT_SECRET: ${BESZEL_OIDC_CLIENT_SECRET}
+    volumes:
+      - authentik_media:/media
+      - authentik_templates:/templates
+      # Declarative config: providers, applications and the outpost wiring.
+      # Authentik watches this directory and re-applies on change.
+      - ./authentik/blueprints:/blueprints/homelab:ro
+    networks:
+      - web
+      - backend
+    # No host port publishing: Traefik fronts 9000 like every other service.
+    shm_size: 512mb
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.authentik.rule=Host(`auth.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.authentik.entrypoints=websecure"
+      - "traefik.http.routers.authentik.tls=true"
+      - "traefik.http.services.authentik.loadbalancer.server.port=9000"
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+
+  # Runs migrations, scheduled tasks and outpost management. Needs the docker
+  # socket so Authentik can deploy outpost containers on its own if you ever
+  # ask it to; the embedded outpost used by the Traefik middleware doesn't
+  # require that, so drop the socket mount if you'd rather not grant it.
+  authentik-worker:
+    <<: *defaults
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG}
+    container_name: authentik-worker
+    command: worker
+    user: root
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+    environment: *authentik-env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - authentik_media:/media
+      - authentik_certs:/certs
+      - authentik_templates:/templates
+      # The worker is what actually applies blueprints, so it needs them too.
+      - ./authentik/blueprints:/blueprints/homelab:ro
+    networks:
+      - web
+      - backend
+    shm_size: 512mb
+    # No healthcheck block on purpose: the authentik image ships its own
+    # HEALTHCHECK, same as Immich's containers do, and upstream's compose file
+    # doesn't override it either.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
 
   # ==========================================================================
   # PASSWORD MANAGER
   # ==========================================================================
-  vaultwarden_db:
+  vaultwarden-db:
     <<: *defaults
-    image: postgres:15-alpine
-    container_name: vaultwarden_db
+    image: postgres:16-alpine
+    container_name: vaultwarden-db
+    # Same reasoning as authentik-db above.
+    command:
+      - postgres
+      - "-c"
+      - "shared_buffers=32MB"
+      - "-c"
+      - "max_connections=20"
+      - "-c"
+      - "work_mem=2MB"
     environment:
       TZ: ${TZ}
+      POSTGRES_DB: vaultwarden
       POSTGRES_USER: ${PG_USER}
       POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: vaultwarden
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - vaultwarden_db:/var/lib/postgresql/data
     networks:
       - backend
     healthcheck:
@@ -139,11 +319,11 @@ services:
     image: vaultwarden/server:latest
     container_name: vaultwarden
     depends_on:
-      vaultwarden_db:
+      vaultwarden-db:
         condition: service_healthy
     environment:
       TZ: ${TZ}
-      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@vaultwarden_db:5432/vaultwarden
+      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@vaultwarden-db:5432/vaultwarden
       ROCKET_ADDRESS: 0.0.0.0
       ROCKET_WORKERS: 4
       DOMAIN: "https://vaultwarden.${DOMAIN_BASE}"
@@ -215,8 +395,8 @@ services:
           cpus: "0.50"
     # Uncomment when printer is connected
     # devices:
-      # - /dev/ttyUSB0:/dev/ttyUSB0
-      # - /dev/video0:/dev/video0
+    # - /dev/ttyUSB0:/dev/ttyUSB0
+    # - /dev/video0:/dev/video0
 
   # ==========================================================================
   # DNS / AD-BLOCKING / DHCP
@@ -227,49 +407,49 @@ services:
     image: pihole/pihole:latest
     hostname: pihole
     # Host networking, not macvlan: macvlan gives Pi-hole its own virtual MAC,
-    # which most Wi-Fi APs silently drop (no 4-address/WDS mode on consumer
-    # routers). Host mode reuses the Pi's own already-working interface, so
-    # DHCP/DNS broadcast and outbound fetches work over Wi-Fi or Ethernet.
+    # which most Wi-Fi APs silently drop. Host mode reuses the Pi's working
+    # interface, so DHCP/DNS broadcast and outbound fetches work over Wi-Fi.
     network_mode: host
     environment:
       TZ: ${TZ}
       FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD}
       FTLCONF_dns_listeningMode: "all"
       FTLCONF_dns_upstreams: "${PIHOLE_UPSTREAM_DNS_1};${PIHOLE_UPSTREAM_DNS_2}"
-      # Web UI moved off :80 since Traefik already owns host port 80/443.
+      # Web UI moved off :80 since Traefik owns host ports 80/443.
       FTLCONF_webserver_port: "8081o"
-      # DHCP server - Pi-hole becomes the LAN's DHCP + DNS authority
+      # Pi-hole is the LAN's DHCP + DNS authority.
       FTLCONF_dhcp_active: "true"
       FTLCONF_dhcp_start: ${PIHOLE_DHCP_START}
       FTLCONF_dhcp_end: ${PIHOLE_DHCP_END}
       FTLCONF_dhcp_router: ${PIHOLE_DHCP_ROUTER}
       FTLCONF_dhcp_netmask: ${PIHOLE_DHCP_NETMASK}
-      # Local DNS Records - every *.home.arpa hostname pointed at the Pi's
-      # own LAN IP, so you never have to add these by hand in the admin UI.
-      # Semicolon-separated, same convention as dns_upstreams above; each
-      # entry is "IP hostname" (classic /etc/hosts syntax).
+      # Local DNS Records seeded from SERVER_LAN_IP, so every *.home.arpa name
+      # points at the Pi without admin-UI work. Semicolon-separated "IP host".
       FTLCONF_dns_hosts: >-
         ${SERVER_LAN_IP} ${DOMAIN_BASE};
-        ${SERVER_LAN_IP} portal.${DOMAIN_BASE};
         ${SERVER_LAN_IP} vaultwarden.${DOMAIN_BASE};
         ${SERVER_LAN_IP} octoprint.${DOMAIN_BASE};
         ${SERVER_LAN_IP} pihole.${DOMAIN_BASE};
         ${SERVER_LAN_IP} nextcloud.${DOMAIN_BASE};
-        ${SERVER_LAN_IP} grafana.${DOMAIN_BASE};
-        ${SERVER_LAN_IP} status.${DOMAIN_BASE};
         ${SERVER_LAN_IP} traefik.${DOMAIN_BASE};
-        ${SERVER_LAN_IP} prometheus.${DOMAIN_BASE}
+        ${SERVER_LAN_IP} auth.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} immich.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} jellyfin.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} pdf.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} beszel.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} glance.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} office.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} ai.${DOMAIN_BASE};
+        ${SERVER_LAN_IP} minecraft.${DOMAIN_BASE}
     volumes:
       - pihole_data:/etc/pihole
       - pihole_dnsmasq:/etc/dnsmasq.d
     cap_add:
-      - NET_ADMIN   # required for DHCP server
-      - SYS_TIME    # required for NTP client
-      - SYS_NICE    # extra scheduling priority for FTL
-    # No Traefik labels here: host-networked containers aren't reachable via
-    # Traefik's docker-label auto-discovery (no docker-network IP to route
-    # to). Traefik routes to it via a static file-provider entry instead -
-    # see traefik/dynamic/pihole.yml.
+      - NET_ADMIN # required for DHCP server
+      - SYS_TIME # required for NTP client
+      - SYS_NICE # extra scheduling priority for FTL
+    # No Traefik labels: host-networked containers aren't discoverable via
+    # docker labels. Traefik routes to it via traefik/dynamic/pihole.yml.
     healthcheck:
       test: ["CMD-SHELL", "pihole status || exit 1"]
       interval: 1m
@@ -280,24 +460,7 @@ services:
         limits:
           cpus: "0.50"
 
-  # Exposes Pi-hole's block stats (queries blocked, % blocked, top blocked
-  # domains) to Prometheus - the blackbox probe above only knows "is the
-  # admin UI up", not "is it actually blocking anything".
-  pihole-exporter:
-    <<: *defaults
-    image: ekofr/pihole-exporter:latest
-    container_name: pihole-exporter
-    environment:
-      PIHOLE_HOSTNAME: "host.docker.internal:8081"
-      PIHOLE_PASSWORD: ${PIHOLE_PASSWORD}
-      INTERVAL: 30s
-      PORT: "9617"
-    networks:
-      - web
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - pihole
+  # No pihole-exporter: Glance's dns-stats widget reads Pi-hole's API directly.
 
   # ==========================================================================
   # DISCORD SCHEDULER BOT
@@ -337,6 +500,11 @@ services:
       - ALL
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+      # Glance reads this metadata through its existing read-only Docker socket.
+      - "glance.name=Discord scheduler"
+      - "glance.icon=si:discord"
+      - "glance.category=bot"
+      - "glance.hide=false"
 
   watchtower:
     image: containrrr/watchtower:latest
@@ -368,6 +536,7 @@ services:
       - nextcloud_apps:/var/www/html/custom_apps
       - nextcloud_config:/var/www/html/config
       - nextcloud_data:/var/www/html/data
+      - ./nextcloud/onlyoffice.config.php:/var/www/html/config/onlyoffice.config.php:ro
     environment:
       PUID: 1000
       PGID: 1000
@@ -378,10 +547,11 @@ services:
       MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
       NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
-      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud.${DOMAIN_BASE}
+      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud nextcloud.${DOMAIN_BASE}
       OVERWRITEPROTOCOL: https
       OVERWRITECLIURL: https://nextcloud.${DOMAIN_BASE}
       REDIS_HOST: redis
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
@@ -390,7 +560,11 @@ services:
       - "traefik.http.routers.nextcloud.tls=true"
       - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS --fail http://127.0.0.1:80/status.php || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS --fail http://127.0.0.1:80/status.php || exit 1",
+        ]
       interval: 1m
       timeout: 10s
       retries: 3
@@ -425,8 +599,7 @@ services:
     networks:
       - backend
 
-  # Optional: online office suite for Nextcloud. Not exposed via Traefik yet -
-  # it wasn't in the required browser-access list. Ask if you'd like it public too.
+  # Create/edit files (collaborative mode) in Nextcloud. No need to expose via Traefik, Nextcloud handles the proxying internally
   collabora:
     <<: *defaults
     image: collabora/code
@@ -441,146 +614,587 @@ services:
       extra_params: --o:ssl.enable=false --o:ssl.termination=true
 
   # ==========================================================================
-  # MONITORING - Prometheus + Grafana + exporters
+  # DOCUMENT EDITING - ONLYOFFICE Document Server
+  #
+  # Does the same job as `collabora` above but is far heavier. Run only one
+  # of them. Unlike Collabora, this is exposed through Traefik because the
+  # browser loads its editor's JS directly from this host.
+  #
+  # No Authentik middleware here (see README): Nextcloud calls it
+  # server-to-server and the browser loads assets / opens a websocket
+  # cross-origin, so a forward-auth redirect breaks both. JWT is its auth.
   # ==========================================================================
-  prometheus:
+  onlyoffice:
     <<: *defaults
-    image: prom/prometheus:latest
-    container_name: prometheus
+    image: onlyoffice/documentserver:latest
+    container_name: onlyoffice
+    environment:
+      TZ: ${TZ}
+      # JWT is enabled by default with a random secret, which would make it
+      # impossible to pair with Nextcloud - so it's pinned here.
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+      JWT_HEADER: Authorization
+      # ONLYOFFICE fetches the document from Nextcloud over HTTPS, signed by
+      # this stack's private CA, which the container doesn't trust. It also
+      # refuses private address ranges by default (SSRF guard), so both must
+      # be relaxed for a homelab.
+      USE_UNAUTHORIZED_STORAGE: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+      # Rendered-document cache. Not in the config this started from, but
+      # without it every restart re-renders everything and the layer grows
+      # inside the container instead of a volume.
+      - onlyoffice_cache:/var/lib/onlyoffice
     networks:
       - web
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
-      - "traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN_BASE}`)"
-      - "traefik.http.routers.prometheus.entrypoints=websecure"
-      - "traefik.http.routers.prometheus.tls=true"
-      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
-      - "traefik.http.routers.prometheus.middlewares=monitoring-auth"
-      - "traefik.http.middlewares.monitoring-auth.basicauth.users=${MONITORING_AUTH}"
+      - "traefik.http.routers.onlyoffice.rule=Host(`office.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.onlyoffice.entrypoints=websecure"
+      - "traefik.http.routers.onlyoffice.tls=true"
+      - "traefik.http.services.onlyoffice.loadbalancer.server.port=80"
+      # ONLYOFFICE builds absolute URLs and websockets from X-Forwarded-Proto.
+      # Without it, it emits http:// URLs into an https:// page and the browser
+      # blocks them as mixed content.
+      - "traefik.http.middlewares.onlyoffice-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.onlyoffice.middlewares=onlyoffice-headers"
+    # Probe the internal docservice on :8000, not the :80 nginx that answers
+    # long before the editor is ready.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/info/info.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # It boots a bundled PostgreSQL, RabbitMQ and Redis before doc services.
+      start_period: 5m
+    # The supervisor inside wants a TTY; a short stop timeout leaves the
+    # bundled database unclean.
+    stdin_open: true
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
 
-  cadvisor:
+  # ==========================================================================
+  # PHOTOS - Immich
+  #
+  # Three containers: the API/web server, Valkey for the job queue, and a
+  # pgvector-flavoured Postgres. The machine-learning sidecar is deliberately
+  # omitted (heaviest thing in the stack); turn ML off in Immich's Settings
+  # too. The library is a host bind mount, not a volume.
+  # ==========================================================================
+  immich-server:
     <<: *defaults
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: cadvisor
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION}
+    container_name: immich_server
+    depends_on:
+      immich-db:
+        condition: service_healthy
+      immich-redis:
+        condition: service_started
+    environment:
+      TZ: ${TZ}
+      DB_HOSTNAME: immich-db
+      DB_USERNAME: immich
+      DB_PASSWORD: ${IMMICH_DB_PASSWORD}
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: immich-redis
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg
+      - ${IMMICH_UPLOAD_LOCATION}:/data
+      - /etc/localtime:/etc/localtime:ro
     networks:
       - web
-    privileged: true
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.immich.rule=Host(`immich.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.immich.entrypoints=websecure"
+      - "traefik.http.routers.immich.tls=true"
+      - "traefik.http.services.immich.loadbalancer.server.port=2283"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
 
-  node-exporter:
+  immich-redis:
     <<: *defaults
-    image: prom/node-exporter:latest
-    container_name: node-exporter
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
+    image: valkey/valkey:9
+    container_name: immich_redis
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  immich-db:
+    <<: *defaults
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    container_name: immich_postgres
+    # Must keep `-c config_file=...`: that file sets shared_preload_libraries
+    # (vchord, vectors), so dropping it breaks Immich's search. It ships a
+    # 512 MB default shared_buffers, tuned down here for a Pi.
     command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - postgres
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "max_connections=30"
+    environment:
+      POSTGRES_USER: immich
+      POSTGRES_PASSWORD: ${IMMICH_DB_PASSWORD}
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - immich_db:/var/lib/postgresql/data
+    networks:
+      - backend
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U immich -d immich"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # MEDIA LIBRARY - Jellyfin
+  #
+  # Runs as root (the default for the official image - it has no PUID/PGID
+  # support, and a non-root `user:` can't write to a fresh docker volume).
+  # Media is a bind mount for the same reason as Immich's library: it's yours,
+  # it's big, and you'll want it on a real path you can rsync.
+  # ==========================================================================
+  jellyfin:
+    <<: *defaults
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    environment:
+      TZ: ${TZ}
+      # Otherwise clients advertising via autodiscovery use the container IP.
+      JELLYFIN_PublishedServerUrl: "https://jellyfin.${DOMAIN_BASE}"
+    volumes:
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      - ${JELLYFIN_MEDIA_PATH}:/media
+    ports:
+      # Client autodiscovery broadcast (UDP, so not proxied by Traefik).
+      - "7359:7359/udp"
     networks:
       - web
+    # No hardware transcode on a Pi 5: no H.264 encoder, no VAAPI render node.
+    # On a Pi 4, uncomment this and keep it:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.jellyfin.tls=true"
+      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/health || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
 
-  blackbox-exporter:
+  # ==========================================================================
+  # GAME SERVER - Minecraft (Java Edition)
+  #
+  # The only non-HTTP service, so the only one with a published host port and
+  # no Traefik router. Players connect to minecraft.${DOMAIN_BASE}:25565.
+  # ==========================================================================
+  minecraft:
     <<: *defaults
-    image: prom/blackbox-exporter:latest
-    container_name: blackbox-exporter
+    image: itzg/minecraft-server:latest
+    container_name: minecraft
+    # The image's console needs an attached TTY for `docker attach` (running
+    # server commands without RCON).
+    stdin_open: true
+    tty: true
+    environment:
+      TZ: ${TZ}
+      EULA: true
+      TYPE: ${MINECRAFT_TYPE}
+      VERSION: ${MINECRAFT_VERSION}
+      # `MEMORY` is deliberately NOT set: it pins -Xms and -Xmx to the same
+      # value, claiming the full amount at startup and holding it. Splitting
+      # INIT/MAX lets the heap start small and grow on demand. A grown heap
+      # only shrinks during a periodic GC, hence the JVM_XX_OPTS below.
+      INIT_MEMORY: ${MINECRAFT_INIT_MEMORY}
+      MAX_MEMORY: ${MINECRAFT_MAX_MEMORY}
+      JVM_XX_OPTS: "-XX:G1PeriodicGCInterval=60000 -XX:G1PeriodicGCSystemLoadThreshold=0"
+      DIFFICULTY: ${MINECRAFT_DIFFICULTY}
+      MAX_PLAYERS: ${MINECRAFT_MAX_PLAYERS}
+      MOTD: ${MINECRAFT_MOTD}
+      OPS: ${MINECRAFT_OPS}
+      # Port 25565 is the one thing reachable off-LAN, so the whitelist is on.
+      ENABLE_WHITELIST: "false"
+      WHITELIST: ${MINECRAFT_WHITELIST}
+      VIEW_DISTANCE: "10" # Max 32; lower on a Pi to reduce CPU load.
+      UID: 1000
+      GID: 1000
+      RCON_CMDS_STARTUP: |-
+        gamerule keep_inventory true
     volumes:
-      - ./monitoring/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+      - minecraft_data:/data
+    ports:
+      - "25565:25565/tcp"
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 1m
+      timeout: 20s
+      retries: 3
+      start_period: 5m
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+
+  # ==========================================================================
+  # DOCUMENT TOOLS - Stirling PDF
+  # ==========================================================================
+  stirling-pdf:
+    <<: *defaults
+    image: docker.stirlingpdf.com/stirlingtools/stirling-pdf:latest
+    container_name: stirling-pdf
+    environment:
+      TZ: ${TZ}
+      # Its own login is disabled; Authentik is the login instead.
+      SECURITY_ENABLELOGIN: "false"
+      SYSTEM_DEFAULTLOCALE: ${STIRLING_LOCALE}
+      SYSTEM_ENABLEANALYTICS: "false"
+      # Cap the JVM heap; unbounded, it sizes from host RAM (2 GB ceiling on
+      # an 8 GB Pi) and grows into it. Raise this first on OCR of large docs.
+      JAVA_CUSTOM_OPTS: "-Xmx384m"
+    volumes:
+      - stirling_configs:/configs
+      - stirling_tessdata:/usr/share/tessdata
+      - stirling_logs:/logs
+      - stirling_pipeline:/pipeline
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.stirling-pdf.rule=Host(`pdf.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.stirling-pdf.entrypoints=websecure"
+      - "traefik.http.routers.stirling-pdf.tls=true"
+      - "traefik.http.services.stirling-pdf.loadbalancer.server.port=8080"
+      # Authentik is this service's login (its own is disabled above).
+      - "traefik.http.routers.stirling-pdf.middlewares=authentik@file"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8080/api/v1/info/status || exit 1",
+        ]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+
+  # ==========================================================================
+  # AI - local LLM chat (Ollama + Open WebUI)
+  #
+  # Ollama runs the model on the Pi's CPU (there is no GPU). Keep the model
+  # small and unload it when idle: this box already runs close to its RAM
+  # ceiling, and a loaded 1.7B model is ~1.5 GB. Open WebUI is the browser UI;
+  # its web search uses DDGS, which ships inside the image, so no separate
+  # search service is needed.
+  #
+  # Auth: Open WebUI trusts the X-authentik-email header injected by Traefik's
+  # forward-auth middleware, so the one Authentik login covers it. That holds
+  # only while nothing else can reach it directly - it is not published to the
+  # host and only sits on the "web" network.
+  # ==========================================================================
+  ollama:
+    <<: *defaults
+    image: ollama/ollama:latest
+    container_name: ollama
+    environment:
+      TZ: ${TZ}
+      # Drop the model after 5 minutes idle, and serve one model/one request at
+      # a time. Without this an idle Open WebUI keeps the whole model resident.
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      # The image defaults to 0.0.0.0 as well, but be explicit so Open WebUI can
+      # reach it across the "web" network.
+      OLLAMA_HOST: "0.0.0.0:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+
+  open-webui:
+    <<: *defaults
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_URL: "https://ai.${DOMAIN_BASE}"
+      # Signs sessions. Generated by scripts/07_setup-ai.sh; keep it stable.
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY}
+      # Login is Authentik. The header below is injected by the authentik@file
+      # middleware attached to this router; Open WebUI auto-creates the account
+      # on first sight (first user becomes admin). No local passwords.
+      WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-authentik-email
+      WEBUI_AUTH_TRUSTED_NAME_HEADER: X-authentik-name
+      ENABLE_LOGIN_FORM: "false"
+      ENABLE_SIGNUP: "false"
+      DEFAULT_USER_ROLE: user
+      # Web search: DDGS ships inside Open WebUI, so this needs no other service.
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: duckduckgo
+      DDGS_BACKEND: auto
+    volumes:
+      - openwebui_data:/app/backend/data
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.open-webui.rule=Host(`ai.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.open-webui.entrypoints=websecure"
+      - "traefik.http.routers.open-webui.tls=true"
+      - "traefik.http.services.open-webui.loadbalancer.server.port=8080"
+      # Authentik is the login (Open WebUI trusts the identity header above).
+      - "traefik.http.routers.open-webui.middlewares=authentik@file"
+    # No healthcheck block: the image ships its own (curl /health), like Immich.
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+
+  # ==========================================================================
+  # MONITORING - Beszel
+  #
+  # Replaced Prometheus + Grafana + Uptime Kuma + four exporters. The agent
+  # reads host and per-container metrics (was cadvisor + node-exporter), keeps
+  # its own history and alerting, and Glance's monitors cover the up/down and
+  # block-stats views. Nothing here watches TLS cert expiry.
+  # ==========================================================================
+  # The hub: web UI, history storage and alert evaluation.
+  beszel:
+    <<: *defaults
+    image: henrygd/beszel:latest
+    container_name: beszel
+    environment:
+      TZ: ${TZ}
+      APP_URL: "https://beszel.${DOMAIN_BASE}"
+    volumes:
+      - beszel_data:/beszel_data
+      - beszel_socket:/beszel_socket
+      # Written by scripts/03_setup-beszel.sh: config.yml declares the system
+      # and token; id_ed25519 pins the hub's SSH key so the agent's public key
+      # is known before the hub first runs. Together the agent self-registers
+      # with no UI steps. The hub only generates a key when this file is
+      # absent, so mounting read-only is enough to pin it.
+      - ./beszel/config.yml:/beszel_data/config.yml:ro
+      - ./beszel/id_ed25519:/beszel_data/id_ed25519:ro
+    ports:
+      # Loopback only, so the host-networked agent can reach the hub to
+      # auto-register without trusting the private CA. Browsers still go
+      # through Traefik on 443.
+      - "127.0.0.1:8091:8090"
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.beszel.rule=Host(`beszel.${DOMAIN_BASE}`)"
+      - "traefik.http.routers.beszel.entrypoints=websecure"
+      - "traefik.http.routers.beszel.tls=true"
+      - "traefik.http.services.beszel.loadbalancer.server.port=8090"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+
+  # The agent that reads this host's stats. Host-networked so it sees the real
+  # interfaces (same reasoning as Pi-hole), and it listens on a unix socket in
+  # the shared volume rather than a TCP port - the hub dials the agent.
+  beszel-agent:
+    <<: *defaults
+    image: henrygd/beszel-agent:latest
+    container_name: beszel-agent
+    network_mode: host
+    environment:
+      TZ: ${TZ}
+      LISTEN: /beszel_socket/beszel.sock
+      # Plain HTTP over loopback (see the hub's port mapping above).
+      HUB_URL: "http://localhost:8091"
+      TOKEN: ${BESZEL_TOKEN}
+      KEY: ${BESZEL_KEY}
+      # No discrete GPU on a Pi; skips a probe that would only ever fail.
+      SKIP_GPU: "true"
+    volumes:
+      - beszel_agent_data:/var/lib/beszel-agent
+      - beszel_socket:/beszel_socket
+      # Read-only; this is how it attributes CPU/RAM per container.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - beszel
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+
+  # ==========================================================================
+  # TLS CERTIFICATE RENEWAL
+  #
+  # Checks daily and reissues the leaf cert inside its renewal window, then
+  # triggers a Traefik reload. Never touches the root CA, so renewals are
+  # invisible to clients. Gets no docker socket - just write access to the
+  # cert, Glance assets and Traefik dynamic directories.
+  # ==========================================================================
+  cert-renew:
+    <<: *defaults
+    image: alpine:3.22
+    container_name: cert-renew
+    environment:
+      TZ: ${TZ}
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      # Kept in sync with the SAN list so a renewal doesn't drop tailnet access.
+      TAILSCALE_IP: ${TAILSCALE_IP}
+      CERT_RENEW_BEFORE_DAYS: ${CERT_RENEW_BEFORE_DAYS}
+      # Point the script at the container's mount paths, not the repo layout.
+      OUT_DIR: /certs
+      GLANCE_ASSETS_DIR: /assets
+      TRAEFIK_DYNAMIC_DIR: /dynamic
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./traefik/certs:/certs
+      - ./traefik/dynamic:/dynamic
+      - ./glance/assets:/assets
+    # bash and openssl aren't in the base image; install at start to avoid
+    # adding a build step to an otherwise build-free repo.
     command:
-      - "--config.file=/etc/blackbox_exporter/config.yml"
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache bash openssl >/dev/null
+        echo "cert-renew: checking every 24h, renewing under $${CERT_RENEW_BEFORE_DAYS}d remaining"
+        while true; do
+          /scripts/maintenance/renew-certs.sh || echo "cert-renew: check failed, will retry in 24h"
+          sleep 86400
+        done
+    networks:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+
+  # ==========================================================================
+  # DASHBOARD - Glance
+  #
+  # The stack's front door, on both glance.${DOMAIN_BASE} and the bare domain.
+  # Serves the root CA for download and the first-run setup notes as well.
+  # Edit glance/glance.yml and restart this container to change it.
+  # ==========================================================================
+  glance:
+    <<: *defaults
+    image: glanceapp/glance:latest
+    container_name: glance
+    environment:
+      TZ: ${TZ}
+      # Glance substitutes ${DOMAIN_BASE} in glance.yml from its own env, so
+      # the config file needs no editing when the domain changes.
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      WEATHER_LOCATION: ${WEATHER_LOCATION}
+      # Read by glance.yml's dns-stats widget.
+      PIHOLE_PASSWORD: ${PIHOLE_PASSWORD}
+      GITHUB_USERNAME: ${GITHUB_USERNAME}
+      BESZEL_URL: http://beszel:8090
+      BESZEL_TOKEN: ${BESZEL_TOKEN}
+      BESZEL_USER_TOKEN: ${BESZEL_USER_TOKEN}
+      BESZEL_SYSTEM_NAME: ${BESZEL_SYSTEM_NAME:-raspi-server}
+      IMMICH_URL: ${IMMICH_URL}
+      IMMICH_KEY: ${IMMICH_KEY}
+      JELLYFIN_URL: ${JELLYFIN_URL}
+      JELLYFIN_KEY: ${JELLYFIN_KEY}
+      JELLYFIN_USER: ${JELLYFIN_USER}
+      TAILSCALE_API_KEY: ${TAILSCALE_API_KEY}
+    volumes:
+      - ./glance/glance.yml:/app/config/glance.yml:ro
+      # Theme definitions, pulled in by glance.yml via `theme: $include:`.
+      - ./glance/themes.yml:/app/config/themes.yml:ro
+      # Required for the widget includes referenced from glance.yml.
+      - ./glance/widgets:/app/config/widgets:ro
+      # Served under /assets/: rootCA.pem and cert-expiry.txt, written by
+      # scripts/05_setup-ca.sh.
+      - ./glance/assets:/app/assets:ro
+      # Read-only, for the docker-containers widget.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - web
     extra_hosts:
-      # Containers don't use Pi-hole as their resolver, so *.home.arpa means
-      # nothing to them by default. Point every probed host at the Docker
-      # host's gateway IP instead - that's where Traefik's published 80/443
-      # actually listen, so this resolves correctly independent of whatever
-      # DNS setup exists on the LAN.
-      - "vaultwarden.home.arpa:host-gateway"
-      - "octoprint.home.arpa:host-gateway"
-      - "pihole.home.arpa:host-gateway"
-      - "nextcloud.home.arpa:host-gateway"
-      - "portal.home.arpa:host-gateway"
-      - "grafana.home.arpa:host-gateway"
-
-  grafana:
-    <<: *defaults
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      TZ: ${TZ}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_SERVER_ROOT_URL: "https://grafana.${DOMAIN_BASE}"
-      # Anonymous viewer access so the portal can embed panels without a login
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
-      GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_SECURITY_COOKIE_SAMESITE: "disabled"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    networks:
-      - web
+      # Needed to reach host-networked Pi-hole for the dns-stats widget.
+      - "host.docker.internal:host-gateway"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN_BASE}`)"
-      - "traefik.http.routers.grafana.entrypoints=websecure"
-      - "traefik.http.routers.grafana.tls=true"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-
-  # Simple public status page - the "is it up, at a glance" view. Complements
-  # Grafana, which is more for digging into telemetry than a quick check.
-  uptime-kuma:
-    <<: *defaults
-    image: louislam/uptime-kuma:2.4.0
-    container_name: uptime-kuma
-    volumes:
-      - uptime_kuma_data:/app/data
-    networks:
-      - web
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=web"
-      - "traefik.http.routers.uptime-kuma.rule=Host(`status.${DOMAIN_BASE}`)"
-      - "traefik.http.routers.uptime-kuma.entrypoints=websecure"
-      - "traefik.http.routers.uptime-kuma.tls=true"
-      - "traefik.http.services.uptime-kuma.loadbalancer.server.port=3001"
-
-  # ==========================================================================
-  # PORTAL - single-page hub: service gallery, setup guide, health dashboard
-  # ==========================================================================
-  portal:
-    <<: *defaults
-    image: nginx:alpine
-    container_name: portal
-    volumes:
-      - ./portal/src:/usr/share/nginx/html:ro
-    networks:
-      - web
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=web"
-      - "traefik.http.routers.portal.rule=Host(`portal.${DOMAIN_BASE}`) || Host(`${DOMAIN_BASE}`)"
-      - "traefik.http.routers.portal.entrypoints=websecure"
-      - "traefik.http.routers.portal.tls=true"
-      - "traefik.http.services.portal.loadbalancer.server.port=80"
+      # Also answers on the bare domain, inherited from the portal it replaced.
+      - "traefik.http.routers.glance.rule=Host(`glance.${DOMAIN_BASE}`) || Host(`${DOMAIN_BASE}`)"
+      - "traefik.http.routers.glance.entrypoints=websecure"
+      - "traefik.http.routers.glance.tls=true"
+      - "traefik.http.services.glance.loadbalancer.server.port=8080"
+      # Authentik is this dashboard's login - Glance has no account system of
+      # its own, and this page exposes the container list and DNS stats.
+      #
+      # /assets/* stays reachable without logging in, via skip_path_regex on
+      # the forward-auth provider (authentik/blueprints/homelab.yaml). That's
+      # deliberate: rootCA.pem lives there, and you need it before your browser
+      # will trust the login page. It's a public CA cert - nothing to protect.
+      - "traefik.http.routers.glance.middlewares=authentik@file"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"

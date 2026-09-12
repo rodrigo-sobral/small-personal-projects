@@ -1,0 +1,22 @@
+# Adapted from the vetted "Tailscale devices" community widget.
+- type: custom-api
+  title: Tailscale devices
+  title-url: https://login.tailscale.com/admin/machines
+  url: https://api.tailscale.com/api/v2/tailnet/-/devices
+  cache: 10m
+  headers:
+    Authorization: Bearer ${TAILSCALE_API_KEY}
+  template: |
+    <ul class="list list-gap-10 collapsible-container" data-collapse-after="4">
+      {{ range .JSON.Array "devices" }}
+        {{ $lastSeen := .String "lastSeen" | parseTime "rfc3339" }}
+        <li>
+          <div class="flex items-center gap-10">
+            <span class="grow size-h4 text-truncate color-primary">{{ findMatch "^([^.]+)" (.String "name") }}</span>
+            {{ if .Bool "updateAvailable" }}<span class="color-primary size-h6">update</span>{{ end }}
+            {{ if not ($lastSeen.After (offsetNow "-10m")) }}<span class="color-negative size-h6">offline</span>{{ end }}
+          </div>
+          <div class="color-subdue size-h6">{{ .String "os" }} · {{ .String "addresses.0" }}</div>
+        </li>
+      {{ end }}
+    </ul>

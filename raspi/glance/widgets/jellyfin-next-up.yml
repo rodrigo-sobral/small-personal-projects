@@ -1,0 +1,49 @@
+# Adapted from the vetted "Jellyfin Latest/Next Up" community widget.
+# Text-only on purpose: thumbnail URLs would expose the API key in page HTML.
+#
+# Jellyfin 12 rejected the legacy `?api_key=` query parameter and the
+# `X-Emby-Token` header with HTTP 401; it only accepts the token via the
+# `Authorization: MediaBrowser Token="…"` header. That is why this widget sends
+# JELLYFIN_KEY as a header rather than as a query parameter.
+- type: custom-api
+  title: Jellyfin · Next up
+  title-url: https://jellyfin.${DOMAIN_BASE}
+  cache: 5m
+  options:
+    base-url: ${JELLYFIN_URL}
+    api-key: ${JELLYFIN_KEY}
+    user-name: ${JELLYFIN_USER}
+    item-count: "8"
+  template: |
+    {{ $baseURL := .Options.StringOr "base-url" "" }}
+    {{ $apiKey := .Options.StringOr "api-key" "" }}
+    {{ $userName := .Options.StringOr "user-name" "" }}
+    {{ $itemCount := .Options.StringOr "item-count" "8" }}
+    {{ $auth := print "MediaBrowser Token=\"" $apiKey "\"" }}
+    {{ if or (eq $baseURL "") (eq $apiKey "") (eq $userName "") }}
+      <p class="color-negative"><span class="i18n" lang="en">Set JELLYFIN_URL, JELLYFIN_KEY and JELLYFIN_USER.</span><span class="i18n" lang="pt">Define JELLYFIN_URL, JELLYFIN_KEY e JELLYFIN_USER.</span></p>
+    {{ else }}
+      {{ $userID := "" }}
+      {{ $users := newRequest (print $baseURL "/Users") | withHeader "Authorization" $auth | getResponse }}
+      {{ range $users.JSON.Array "" }}
+        {{ if eq (.String "Name") $userName }}{{ $userID = .String "Id" }}{{ break }}{{ end }}
+      {{ end }}
+      {{ if eq $userID "" }}
+        <p class="color-negative"><span class="i18n" lang="en">Jellyfin user '{{ $userName }}' was not found.</span><span class="i18n" lang="pt">O utilizador do Jellyfin '{{ $userName }}' não foi encontrado.</span></p>
+      {{ else }}
+        {{ $nextUp := newRequest (print $baseURL "/Shows/NextUp") | withHeader "Authorization" $auth | withParameter "UserId" $userID | withParameter "Limit" $itemCount | withParameter "EnableResumable" "true" | getResponse }}
+        {{ $items := $nextUp.JSON.Array "Items" }}
+        {{ if eq (len $items) 0 }}
+          <p class="color-subdue">Nothing waiting — start streaming something.</p>
+        {{ else }}
+          <ul class="list list-gap-10">
+            {{ range $items }}
+              <li>
+                <a class="block text-truncate color-primary" href="{{ print $baseURL "/web/#/details?id=" (.String "Id") | safeURL }}">{{ .String "SeriesName" }}</a>
+                <div class="color-subdue size-h6">S{{ .Int "ParentIndexNumber" }}E{{ .Int "IndexNumber" }} · {{ .String "Name" }}</div>
+              </li>
+            {{ end }}
+          </ul>
+        {{ end }}
+      {{ end }}
+    {{ end }}

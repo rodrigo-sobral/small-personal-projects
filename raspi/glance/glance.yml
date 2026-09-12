@@ -1,0 +1,551 @@
+# Glance dashboard config - the stack's front door. Mounted read-only at
+# /app/config/glance.yml. After editing: docker compose restart glance.
+#
+# Four pages: Home (overview), Services (monitoring), Docs (per-service docs),
+# Setup (CA download + first-run notes).
+#
+# ${DOMAIN_BASE} is substituted by Glance from the container environment, so
+# this file needs no editing if you change DOMAIN_BASE in .env.
+#
+# Why every monitor has both `url` and `check-url`:
+#   `url` is the link you click. `check-url` is what Glance requests to decide
+#   green-or-red. Containers don't use Pi-hole, so `*.home.arpa` means nothing
+#   inside this container - probing the public URL fails DNS and reports every
+#   service down. So `check-url` targets the container directly over the `web`
+#   network by service name and internal port: no DNS, no TLS, faster. The
+#   trade-off is it reports "the app is up", not "the ingress path works" -
+#   but if this page rendered you reached it through Traefik. Traefik also has
+#   its own /ping check below.
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  # Served under /assets/: rootCA.pem and cert-expiry.txt, written by
+  # scripts/05_setup-ca.sh.
+  assets-path: /app/assets
+
+# Injected into <head> on every page. The first inline snippet sets the language
+# attribute before the stylesheet applies (so the right language renders without
+# a flash). The second loads our custom scripts with a per-page-load cache
+# buster: Glance serves /assets/* with a 2-hour max-age and no content hash, so
+# without it a browser will happily keep a stale i18n.js after we change it.
+document:
+  head: |
+    <script>try{var l=localStorage.getItem("glance-lang");if(l!=="en-US"&&l!=="pt-PT"){l=(navigator.language||"").toLowerCase().indexOf("pt")===0?"pt-PT":"en-US";}document.documentElement.setAttribute("data-lang",l);document.documentElement.setAttribute("lang",l);}catch(e){}</script>
+    <script>(function(){var v=Date.now();["/assets/i18n.js","/assets/theme-order.js","/assets/weather-panel.js"].forEach(function(src){var s=document.createElement("script");s.src=src+"?v="+v;s.async=false;document.head.appendChild(s);});})();</script>
+
+theme:
+  # All theme definitions live in themes.yml (see the comment there).
+  $include: themes.yml
+
+branding:
+  app-name: ${DOMAIN_BASE}
+
+# ===========================================================================
+# Reusable monitor site lists. YAML anchors keep the Home summary and the
+# Services page from drifting apart - edit a service once, both pages update.
+# ===========================================================================
+definitions:
+  core-sites: &core-sites
+    - title: Traefik
+      url: https://traefik.${DOMAIN_BASE}
+      # Dedicated ping entrypoint on :8082 (see the traefik service's
+      # --ping flags). Unauthenticated and cheap, unlike the dashboard.
+      check-url: http://traefik:8082/ping
+      icon: di:traefik
+    - title: Pi-hole
+      url: https://pihole.${DOMAIN_BASE}/admin
+      # Host-networked, so it's reached through the docker host gateway.
+      check-url: http://host.docker.internal:8081/admin
+      icon: di:pi-hole
+    - title: Authentik
+      url: https://auth.${DOMAIN_BASE}
+      check-url: http://authentik-server:9000/-/health/live/
+      icon: di:authentik
+    - title: Beszel
+      url: https://beszel.${DOMAIN_BASE}
+      check-url: http://beszel:8090/api/health
+      icon: di:beszel
+
+  app-sites: &app-sites
+    - title: Immich
+      url: https://immich.${DOMAIN_BASE}
+      check-url: http://immich-server:2283/api/server/ping
+      icon: di:immich
+    - title: Jellyfin
+      url: https://jellyfin.${DOMAIN_BASE}
+      check-url: http://jellyfin:8096/health
+      icon: di:jellyfin
+    - title: Nextcloud
+      url: https://nextcloud.${DOMAIN_BASE}
+      check-url: http://nextcloud:80/status.php
+      icon: di:nextcloud
+    - title: Vaultwarden
+      url: https://vaultwarden.${DOMAIN_BASE}
+      check-url: http://vaultwarden:80/alive
+      icon: di:vaultwarden
+    - title: Stirling PDF
+      url: https://pdf.${DOMAIN_BASE}
+      check-url: http://stirling-pdf:8080/api/v1/info/status
+      icon: di:stirling-pdf
+    - title: OctoPrint
+      url: https://octoprint.${DOMAIN_BASE}
+      check-url: http://octoprint:5000
+      icon: di:octoprint
+    - title: ONLYOFFICE
+      url: https://office.${DOMAIN_BASE}
+      # Upstream's own healthcheck target: the internal docservice on :8000.
+      # nginx on :80 answers long before the editor is actually usable, so
+      # probing :80 would report green during a multi-minute startup.
+      check-url: http://onlyoffice:8000/info/info.json
+      icon: di:onlyoffice
+    - title: AI
+      url: https://ai.${DOMAIN_BASE}
+      check-url: http://open-webui:8080/health
+      icon: di:open-webui
+
+pages:
+  # =========================================================================
+  # HOME - the at-a-glance overview
+  # =========================================================================
+  - name: Home
+    columns:
+      - size: small
+        widgets:
+          # Current host use plus 24-hour average and peak figures, pulled
+          # from the Beszel history that the stack already retains.
+          - $include: widgets/beszel-resources.yml
+
+          # Replaces pihole-exporter + the Grafana block-stats panels: same
+          # numbers, read straight from Pi-hole's own API.
+          - type: dns-stats
+            service: pihole-v6
+            url: http://host.docker.internal:8081
+            password: ${PIHOLE_PASSWORD}
+            hour-format: 24h
+
+          # Vetted community widget. This needs a scoped, short-lived API key;
+          # it makes the remote-access side of the homelab visible at a glance.
+          - $include: widgets/tailscale-devices.yml
+
+      - size: full
+        widgets:
+          # Vetted community widget, split into an include so this primary
+          # configuration remains navigable. It queries Immich internally.
+          - $include: widgets/immich-stats.yml
+
+          # Vetted community widget. Deliberately text-only: enabling artwork
+          # would expose the Jellyfin API key in the rendered page.
+          - $include: widgets/jellyfin-next-up.yml
+
+          - type: bookmarks
+            groups:
+              - title: Apps
+                links:
+                  - title: Immich
+                    url: https://immich.${DOMAIN_BASE}
+                    icon: di:immich
+                    description: Photos and videos
+                  - title: Jellyfin
+                    url: https://jellyfin.${DOMAIN_BASE}
+                    icon: di:jellyfin
+                    description: Movies, shows, music
+                  - title: Nextcloud
+                    url: https://nextcloud.${DOMAIN_BASE}
+                    icon: di:nextcloud
+                    description: Files, calendar, mail
+                  - title: Vaultwarden
+                    url: https://vaultwarden.${DOMAIN_BASE}
+                    icon: di:vaultwarden
+                    description: Passwords
+                  - title: Stirling PDF
+                    url: https://pdf.${DOMAIN_BASE}
+                    icon: di:stirling-pdf
+                    description: PDF tools, all local
+                  - title: ONLYOFFICE
+                    url: https://office.${DOMAIN_BASE}
+                    icon: di:onlyoffice
+                    description: Document editor behind Nextcloud
+                  - title: OctoPrint
+                    url: https://octoprint.${DOMAIN_BASE}
+                    icon: di:octoprint
+                    description: 3D printer
+                  - title: AI
+                    url: https://ai.${DOMAIN_BASE}
+                    icon: di:open-webui
+                    description: Local LLM chat with web search
+              - title: Admin
+                links:
+                  - title: Beszel
+                    url: https://beszel.${DOMAIN_BASE}
+                    icon: di:beszel
+                    description: Resource history and alerts
+                  - title: Traefik
+                    url: https://traefik.${DOMAIN_BASE}
+                    icon: di:traefik
+                    description: Routers, services, TLS
+                  - title: Pi-hole
+                    url: https://pihole.${DOMAIN_BASE}/admin
+                    icon: di:pi-hole
+                    description: DNS, DHCP, blocklists
+                  - title: Authentik
+                    url: https://auth.${DOMAIN_BASE}
+                    icon: di:authentik
+                    description: Users, applications, outposts
+
+      - size: small
+        widgets:
+          - type: calendar
+            first-day-of-week: sunday
+
+          # Single interactive weather panel: current conditions plus a
+          # selectable 8-day range (today + the next 7 days). The widget is just
+          # a mount point; assets/weather-panel.js does the work.
+          - $include: widgets/weather-panel.yml
+
+          # Standalone one-click install: opens Discord's OAuth flow to add the
+          # scheduler bot. Text only, so no Discord credential is exposed.
+          - type: bookmarks
+            title: Scheduler bot
+            groups:
+              - links:
+                  - title: Add to Discord
+                    url: https://discord.com/oauth2/authorize?client_id=1492618771419103376
+                    icon: si:discord
+                    description: Install the bot to your server
+
+          - type: html
+            source: |
+              <br><div class="widget-header"><h2>
+                <span class="i18n" lang="en">Minecraft Server</span>
+                <span class="i18n" lang="pt">Servidor Minecraft</span>
+              </h2></div>
+              <div class="widget-content">
+                <p class="size-h4"><code>minecraft.${DOMAIN_BASE}:25565</code></p>
+              </div><br>
+
+  # =========================================================================
+  # SERVICES - the dedicated monitoring page
+  # =========================================================================
+  - name: Services
+    slug: services
+    columns:
+      - size: full
+        widgets:
+          # show-failing-only is deliberately false: on a page you open *to
+          # check status*, "everything is green" is the answer you want to see,
+          # not an empty panel you can't distinguish from a broken widget.
+          - type: monitor
+            cache: 30s
+            title: Ingress & identity
+            style: dynamic-columns-experimental
+            sites: *core-sites
+
+          - type: monitor
+            cache: 30s
+            title: Applications
+            style: dynamic-columns-experimental
+            sites: *app-sites
+
+          - type: docker-containers
+            format-container-names: true
+
+      - size: small
+        widgets:
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">What checks what</span><span class="i18n" lang="pt">O que verifica o quê</span></h2></div>
+              <div class="widget-content">
+                <ul class="color-subdue size-h6">
+                  <li><span class="i18n" lang="en"><strong>This page</strong> — is each app answering right now?
+                    Point-in-time only: no history, and it can't notify you.</span><span class="i18n" lang="pt"><strong>Esta página</strong> — cada aplicação está a responder agora?
+                    Apenas no momento: sem histórico e não te pode notificar.</span></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en"><strong>Beszel</strong> — CPU, memory,
+                    disk, network and temperature history per host and per
+                    container, with alerts. This is the one that can actually
+                    wake you up.</span><span class="i18n" lang="pt"><strong>Beszel</strong> — histórico de CPU, memória,
+                    disco, rede e temperatura por anfitrião e por contentor, com
+                    alertas. É o que te pode realmente acordar.</span></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en"><strong>Container health</strong> — the
+                    list on the left comes straight from Docker, so a container
+                    with a failing <code>healthcheck</code> shows up there even if
+                    its HTTP port still answers.</span><span class="i18n" lang="pt"><strong>Saúde dos contentores</strong> — a
+                    lista à esquerda vem diretamente do Docker, por isso um contentor
+                    com um <code>healthcheck</code> em falha aparece lá mesmo que
+                    a porta HTTP ainda responda.</span></li>
+                </ul>
+                <p class="color-subdue size-h6 margin-top-10">
+                  <span class="i18n" lang="en">Nothing here watches TLS certificate expiry — see
+                  <a href="/setup" class="color-primary">Setup</a>.</span>
+                  <span class="i18n" lang="pt">Nada aqui vigia a expiração do certificado TLS — vê a
+                  <a href="/setup" class="color-primary">Configuração</a>.</span>
+                </p>
+              </div><br>
+
+          # This follows the same repository that publishes the bot image
+          # consumed by Watchtower; no Discord or GitHub credential is exposed.
+          - type: releases
+            title: Scheduler bot releases
+            cache: 6h
+            collapse-after: 3
+            show-source-icon: true
+            repositories:
+              - ${GITHUB_USERNAME}/scheduler-discord-bot
+
+  # =========================================================================
+  # DOCS - where to read about each service
+  # =========================================================================
+  - name: Docs
+    slug: docs
+    columns:
+      - size: full
+        widgets:
+          - type: bookmarks
+            title: Applications
+            groups:
+              - title: Media & files
+                links:
+                  - title: Immich
+                    url: https://docs.immich.app/
+                    icon: di:immich
+                    description: Photo library, mobile backup, external libraries
+                  - title: Jellyfin
+                    url: https://jellyfin.org/docs/
+                    icon: di:jellyfin
+                    description: Libraries, naming conventions, clients
+                  - title: Nextcloud
+                    url: https://docs.nextcloud.com/
+                    icon: di:nextcloud
+                    description: Files, groupware, app store
+              - title: Tools
+                links:
+                  - title: Vaultwarden
+                    url: https://github.com/dani-garcia/vaultwarden/wiki
+                    icon: di:vaultwarden
+                    description: Admin page, backups, client setup
+                  - title: Stirling PDF
+                    url: https://docs.stirlingpdf.com/
+                    icon: di:stirling-pdf
+                    description: Every PDF operation, pipelines, OCR
+                  - title: ONLYOFFICE Docs
+                    url: https://helpcenter.onlyoffice.com/docs/installation/docs-community-index.aspx
+                    icon: di:onlyoffice
+                    description: JWT, reverse proxy, Nextcloud connector
+                  - title: OctoPrint
+                    url: https://docs.octoprint.org/en/main/
+                    icon: di:octoprint
+                    description: Plugins, printer profiles, webcam
+                  - title: Minecraft server image
+                    url: https://docker-minecraft-server.readthedocs.io/
+                    icon: di:minecraft
+                    description: Every env var, mod loaders, backups
+                  - title: Open WebUI
+                    url: https://docs.openwebui.com/
+                    icon: di:open-webui
+                    description: Models, web search, tools, RAG
+
+          - type: bookmarks
+            title: Infrastructure
+            groups:
+              - title: Ingress & identity
+                links:
+                  - title: Traefik
+                    url: https://doc.traefik.io/traefik/
+                    icon: di:traefik
+                    description: Routers, middlewares, file provider, TLS
+                  - title: Authentik
+                    url: https://docs.goauthentik.io/
+                    icon: di:authentik
+                    description: Providers, outposts, flows, blueprints
+                  - title: Pi-hole
+                    url: https://docs.pi-hole.net/
+                    icon: di:pi-hole
+                    description: DNS, DHCP, blocklists, FTLCONF_ variables
+              - title: Monitoring & platform
+                links:
+                  - title: Beszel
+                    url: https://www.beszel.dev/guide/what-is-beszel
+                    icon: di:beszel
+                    description: Agents, alerts, config.yml, universal tokens
+                  - title: Glance
+                    url: https://github.com/glanceapp/glance/blob/main/docs/configuration.md
+                    icon: di:glance
+                    description: Every widget and option in this dashboard
+                  - title: Docker Compose
+                    url: https://docs.docker.com/reference/compose-file/
+                    icon: di:docker
+                    description: The compose file reference
+                  - title: Tailscale
+                    url: https://tailscale.com/kb/
+                    icon: di:tailscale
+                    description: Subnet routes, split DNS, ACLs
+
+      - size: small
+        widgets:
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">This stack's own docs</span><span class="i18n" lang="pt">Documentação desta stack</span></h2></div>
+              <div class="widget-content">
+                <p>
+                  <span class="i18n" lang="en">The <code>README.md</code> next to <code>docker-compose.yml</code>
+                  is the real reference for <em>this</em> deployment — the
+                  decisions, the trade-offs and the things that will bite you.</span>
+                  <span class="i18n" lang="pt">O <code>README.md</code> ao lado do <code>docker-compose.yml</code>
+                  é a referência real para <em>esta</em> implementação — as
+                  decisões, os compromissos e as coisas que te vão morder.</span>
+                </p>
+                <p class="color-subdue size-h6 margin-top-10"><span class="i18n" lang="en">Worth reading before you change anything:</span><span class="i18n" lang="pt">Vale a pena ler antes de alterares algo:</span></p>
+                <ul class="color-subdue size-h6">
+                  <li><span class="i18n" lang="en"><strong>Services</strong> — what each service is for and how each deviates from the pattern.</span><span class="i18n" lang="pt"><strong>Serviços</strong> — para que serve cada serviço e como cada um se desvia do padrão.</span></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en"><strong>Single sign-on</strong> — which services Authentik fronts, which can't be, and why.</span><span class="i18n" lang="pt"><strong>Início de sessão único</strong> — que serviços o Authentik protege, quais não pode e porquê.</span></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en"><strong>Monitoring</strong> — what Beszel and Glance cover, and the one thing that's not watched.</span><span class="i18n" lang="pt"><strong>Monitorização</strong> — o que o Beszel e o Glance cobrem, e a única coisa que não é vigiada.</span></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en"><strong>Adding a service</strong> — the files to touch, in order.</span><span class="i18n" lang="pt"><strong>Adicionar um serviço</strong> — os ficheiros a alterar, por ordem.</span></li>
+                </ul>
+              </div><br>
+
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">Everyday commands</span><span class="i18n" lang="pt">Comandos do dia a dia</span></h2></div>
+              <div class="widget-content">
+                <ul class="color-subdue size-h6">
+                  <li><span class="i18n" lang="en">Logs for one service:</span><span class="i18n" lang="pt">Registos de um serviço:</span><br><code>docker compose logs -f &lt;name&gt;</code></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en">Apply a compose change:</span><span class="i18n" lang="pt">Aplicar uma alteração ao Compose:</span><br><code>docker compose up -d</code></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en">Reload this dashboard:</span><span class="i18n" lang="pt">Recarregar este painel:</span><br><code>docker compose restart glance</code></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en">Minecraft console:</span><span class="i18n" lang="pt">Consola do Minecraft:</span><br><code>docker attach minecraft</code></li>
+                  <li class="margin-top-10"><span class="i18n" lang="en">Renew the TLS cert now:</span><span class="i18n" lang="pt">Renovar já o certificado TLS:</span><br><code>./scripts/maintenance/renew-certs.sh --force</code></li>
+                </ul>
+              </div><br>
+
+  # =========================================================================
+  # SETUP - inherited from the portal: CA download + first-run steps
+  # =========================================================================
+  - name: Setup
+    slug: setup
+    columns:
+      - size: full
+        widgets:
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">Trust the local certificate authority</span><span class="i18n" lang="pt">Confiar na autoridade de certificação local</span></h2></div>
+              <div class="widget-content">
+                <p>
+                  <span class="i18n" lang="en">Every service here uses a certificate issued by this homelab's own
+                  root CA &mdash; normal for internal-only domains. Install it into
+                  your device's trust store once and every
+                  <code>*.${DOMAIN_BASE}</code> page loads with a normal padlock.</span>
+                  <span class="i18n" lang="pt">Todos os serviços aqui usam um certificado emitido pela própria
+                  AC raiz deste homelab &mdash; normal para domínios apenas internos.
+                  Instala-a uma vez no armazenamento de confiança do teu dispositivo e
+                  todas as páginas <code>*.${DOMAIN_BASE}</code> carregam com um
+                  cadeado normal.</span>
+                </p>
+                <p class="margin-top-10">
+                  <a href="/assets/rootCA.pem" class="color-primary"><span class="i18n" lang="en">Download rootCA.pem &rarr;</span><span class="i18n" lang="pt">Descarregar rootCA.pem &rarr;</span></a>
+                  &nbsp;&middot;&nbsp;
+                  <a href="/assets/cert-expiry.txt" class="color-subdue"><span class="i18n" lang="en">certificate expiry &rarr;</span><span class="i18n" lang="pt">expiração do certificado &rarr;</span></a>
+                </p>
+                <ul class="color-subdue size-h6 margin-top-10">
+                  <li><span class="i18n" lang="en"><strong>macOS:</strong> Keychain Access &rarr; System &rarr; import &rarr; "Always Trust"</span><span class="i18n" lang="pt"><strong>macOS:</strong> Acesso às Chaves &rarr; Sistema &rarr; importar &rarr; "Confiar Sempre"</span></li>
+                  <li><span class="i18n" lang="en"><strong>Windows:</strong> certmgr.msc &rarr; Trusted Root Certification Authorities &rarr; Import</span><span class="i18n" lang="pt"><strong>Windows:</strong> certmgr.msc &rarr; Autoridades de Certificação de Raiz Fidedignas &rarr; Importar</span></li>
+                  <li><span class="i18n" lang="en"><strong>Linux:</strong> copy to /usr/local/share/ca-certificates/, run update-ca-certificates</span><span class="i18n" lang="pt"><strong>Linux:</strong> copia para /usr/local/share/ca-certificates/ e executa update-ca-certificates</span></li>
+                  <li><span class="i18n" lang="en"><strong>iOS/Android:</strong> install the profile, then enable full trust in settings</span><span class="i18n" lang="pt"><strong>iOS/Android:</strong> instala o perfil e ativa a confiança total nas definições</span></li>
+                </ul>
+                <p class="color-subdue size-h6 margin-top-10">
+                  <span class="i18n" lang="en">The <em>leaf</em> certificate is renewed automatically by the
+                  <code>cert-renew</code> service, which doesn't change the root CA
+                  &mdash; so you only ever install this file once, no matter how many
+                  times the leaf rotates.</span>
+                  <span class="i18n" lang="pt">O certificado <em>folha</em> é renovado automaticamente pelo
+                  serviço <code>cert-renew</code>, que não altera a AC raiz &mdash;
+                  por isso só instalas este ficheiro uma vez, independentemente das
+                  vezes que a folha roda.</span>
+                </p>
+              </div><br>
+
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">Signing in</span><span class="i18n" lang="pt">Iniciar sessão</span></h2></div>
+              <div class="widget-content">
+                <p>
+                  <span class="i18n" lang="en">Authentik is the single login for the services that have no
+                  account system of their own &mdash; this dashboard, Stirling PDF
+                  and the Traefik dashboard. One set of credentials, created once at
+                  <a href="https://auth.${DOMAIN_BASE}/if/flow/initial-setup/" class="color-primary">the initial-setup flow</a>
+                  (one-time link; it stops working after you use it).</span>
+                  <span class="i18n" lang="pt">O Authentik é o início de sessão único para os serviços que não têm
+                  um sistema de contas próprio &mdash; este painel, o Stirling PDF e o
+                  painel do Traefik. Um único conjunto de credenciais, criado uma vez
+                  em <a href="https://auth.${DOMAIN_BASE}/if/flow/initial-setup/" class="color-primary">o fluxo de configuração inicial</a>
+                  (ligação de uso único; deixa de funcionar depois de a usares).</span>
+                </p>
+                <p class="color-subdue size-h6 margin-top-10">
+                  <span class="i18n" lang="en">Services with their own native apps &mdash; Immich, Jellyfin,
+                  Nextcloud, Vaultwarden &mdash; keep their own logins by default,
+                  because a browser redirect breaks mobile and sync clients.
+                  Authentik ships pre-built OIDC providers for the ones that support
+                  it; see the README for the per-app steps and which ones simply
+                  can't be integrated.</span>
+                  <span class="i18n" lang="pt">Os serviços com aplicações nativas próprias &mdash; Immich, Jellyfin,
+                  Nextcloud, Vaultwarden &mdash; mantêm os seus próprios inícios de
+                  sessão por predefinição, porque um redirecionamento do navegador
+                  quebra os clientes móveis e de sincronização. O Authentik inclui
+                  fornecedores OIDC pré-construídos para os que o suportam; vê o
+                  README para os passos por aplicação e para saber quais simplesmente
+                  não podem ser integrados.</span>
+                </p>
+              </div><br>
+
+          - type: html
+            source: |
+              <div class="widget-header"><h2><span class="i18n" lang="en">Remaining first-run steps</span><span class="i18n" lang="pt">Passos restantes da primeira execução</span></h2></div>
+              <div class="widget-content">
+                <ul>
+                  <li>
+                    <span class="i18n" lang="en"><strong>Jellyfin</strong> &mdash; add libraries pointing at
+                    <code>/media/movies</code>, <code>/media/shows</code>,
+                    <code>/media/music</code>.</span>
+                    <span class="i18n" lang="pt"><strong>Jellyfin</strong> &mdash; adiciona bibliotecas apontadas a
+                    <code>/media/movies</code>, <code>/media/shows</code>,
+                    <code>/media/music</code>.</span>
+                  </li>
+                  <li class="margin-top-10">
+                    <span class="i18n" lang="en"><strong>Immich</strong> &mdash; the first signup becomes the
+                    admin. Turn off Settings &rarr; Machine Learning; that container
+                    isn't deployed.</span>
+                    <span class="i18n" lang="pt"><strong>Immich</strong> &mdash; o primeiro registo torna-se o
+                    administrador. Desativa Definições &rarr; Machine Learning; esse
+                    contentor não está implementado.</span>
+                  </li>
+                  <li class="margin-top-10">
+                    <span class="i18n" lang="en"><strong>Minecraft</strong> &mdash; won't boot until you accept
+                    Mojang's EULA with <code>MINECRAFT_EULA=TRUE</code> in
+                    <code>.env</code>.</span>
+                    <span class="i18n" lang="pt"><strong>Minecraft</strong> &mdash; não arranca até aceitares o EULA
+                    da Mojang com <code>MINECRAFT_EULA=TRUE</code> no
+                    <code>.env</code>.</span>
+                  </li>
+                  <li class="margin-top-10">
+                    <span class="i18n" lang="en"><strong>Beszel</strong> &mdash; nothing to do. The system, its
+                    token and the hub's SSH key are all pre-seeded by
+                    <code>scripts/01_setup.sh</code>; just create your account.</span>
+                    <span class="i18n" lang="pt"><strong>Beszel</strong> &mdash; nada a fazer. O sistema, o token e a
+                    chave SSH do hub já estão pré-configurados por
+                    <code>scripts/01_setup.sh</code>; basta criares a tua conta.</span>
+                  </li>
+                </ul>
+                <p class="color-subdue size-h6 margin-top-10">
+                  <span class="i18n" lang="en">Pi-hole is this network's DHCP server, so devices pick up DNS on
+                  their next lease renewal. Local DNS records for every
+                  <code>*.${DOMAIN_BASE}</code> name are seeded from
+                  <code>SERVER_LAN_IP</code> &mdash; nothing to add by hand. A blank
+                  page on a <code>*.${DOMAIN_BASE}</code> address is a DNS problem,
+                  not a TLS one; a cert issue shows a full warning page instead.</span>
+                  <span class="i18n" lang="pt">O Pi-hole é o servidor DHCP desta rede, por isso os dispositivos
+                  recebem o DNS na próxima renovação da concessão. Os registos DNS
+                  locais para todos os nomes <code>*.${DOMAIN_BASE}</code> são criados
+                  a partir de <code>SERVER_LAN_IP</code> &mdash; nada a adicionar
+                  manualmente. Uma página em branco num endereço
+                  <code>*.${DOMAIN_BASE}</code> é um problema de DNS, não de TLS; um
+                  problema de certificado mostra uma página de aviso completa.</span>
+                </p>
+              </div><br>

@@ -33,6 +33,12 @@ sudo ufw allow from "$LOCAL_SUBNET" to any port 53 proto udp
 sudo ufw allow from "$LOCAL_SUBNET" to any port 67 proto udp
 sudo ufw allow from "$LOCAL_SUBNET" to any port 123 proto udp
 
+echo "Allowing Minecraft and Jellyfin's non-HTTP ports from the local subnet..."
+echo "(everything else in the stack is reached through Traefik's 80/443 above;"
+echo "these two publish their own ports because their protocols aren't HTTP)"
+sudo ufw allow from "$LOCAL_SUBNET" to any port 25565 proto tcp
+sudo ufw allow from "$LOCAL_SUBNET" to any port 7359 proto udp
+
 echo "Allowing Tailscale (full access over the tailnet interface)..."
 sudo ufw allow in on tailscale0
 sudo ufw allow out on tailscale0

@@ -1,0 +1,42 @@
+/* Bilingual dashboard support.
+ *
+ * Translatable prose is authored inline in glance.yml as a pair of
+ * <span class="i18n" lang="en">…</span> / <span class="i18n" lang="pt">…</span>
+ * siblings. Only one is shown, based on the `data-lang` attribute that
+ * assets/i18n.js sets on <html>.
+ *
+ * English is the default when the attribute is absent, so the English copy is
+ * still visible if JavaScript is unavailable.
+ */
+html[data-lang="pt-PT"] .i18n[lang="en"] {
+  display: none !important;
+}
+html:not([data-lang="pt-PT"]) .i18n[lang="pt"] {
+  display: none !important;
+}
+
+/* Language switcher (injected by assets/i18n.js into the header and the mobile
+ * navigation actions). */
+.lang-toggle {
+  align-self: center;
+  margin-inline-start: 0.75rem;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--color-separator);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-subdue);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  line-height: 1.7;
+  cursor: pointer;
+}
+.lang-toggle:hover,
+.lang-toggle:focus-visible {
+  color: var(--color-text-highlight);
+  border-color: var(--color-text-subdue);
+}
+.mobile-navigation-actions .lang-toggle {
+  align-self: flex-start;
+  margin-inline-start: 0;
+}

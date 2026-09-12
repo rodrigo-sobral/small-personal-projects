@@ -1,260 +1,138 @@
 # Homelab stack
 
-Refactored from a single sprawling `docker-compose.yml` into one coherent stack:
-one ingress (Traefik), one certificate authority, one monitoring pipeline, one
-portal page tying it together.
+A self-hosted homelab for a Raspberry Pi, defined in a single `docker-compose.yml`. One ingress (Traefik), one certificate authority, one monitoring agent (Beszel), and one dashboard (Glance).
 
-## What changed from the original file
+## Architecture
 
-- **Removed two of the three reverse proxies.** The old file ran `nginx`,
-  `traefik`, and `nginx-proxy-manager` simultaneously — all three wanted ports
-  80/443. Traefik is now the only ingress; everything gets HTTPS through it.
-- **Nextcloud moved off its isolated network.** It lived alone on a `cloud`
-  network Traefik couldn't reach. It's now on `web` (for Traefik) plus
-  `backend` (for its DB/Redis), same pattern as every other service.
-- **Networks split by trust level:** `web` (Traefik + app frontends),
-  `backend` (databases/caches, `internal: true`, no route out).
-- **Pi-hole runs with `network_mode: host`,** not on a docker network at
-  all. It originally used a `macvlan` network to get a real LAN IP for
-  DHCP/DNS broadcast — that works fine on Ethernet, but macvlan gives a
-  container its own virtual MAC address, and most Wi-Fi APs silently drop
-  traffic from a second MAC on one physical radio connection (no 4-address/
-  WDS mode on consumer routers). If your Pi is on Wi-Fi, macvlan is a dead
-  end - DHCP/DNS broadcast and even outbound fetches from that container
-  fail silently. Host networking reuses the Pi's own already-working
-  interface and MAC, so it works on Wi-Fi or Ethernet. This is also Pi-hole's
-  own recommended setup for full DHCP functionality.
-- **Pi-hole's admin port mapping was fixed** (the original had `4443:43`, a
-  typo) and it's now reached through Traefik like everything else, just via
-  a static route instead of docker-label discovery (see below).
-- **Added:** Prometheus, cAdvisor, node-exporter, blackbox-exporter,
-  pihole-exporter, Grafana, Uptime Kuma, and the `portal` service.
+- **Ingress:** Traefik is the only reverse proxy and terminates all TLS. Every service is discovered through Docker labels and reached over HTTPS.
+- **Networks:** `web` (Traefik + service frontends) and `backend` (`internal: true`, for databases and caches).
+- **Certificates:** a private root CA (`rootCA.pem`) signs one leaf covering every `*.<DOMAIN_BASE>` name. The leaf is renewed automatically; the root CA never is.
+- **Pi-hole** runs with `network_mode: host` so DNS/DHCP broadcast works on Wi-Fi. Its web UI is on `127.0.0.1:8081` and is routed through Traefik via a static route (`traefik/dynamic/pihole.yml`).
 
-## How Pi-hole's networking actually works now
+## Services
 
-Since this tripped things up once already, worth spelling out precisely:
+| Service | URL | Purpose |
+| -- | -- | -- |
+| Glance | `glance.<DOMAIN_BASE>` and the bare domain | Dashboard, CA download, setup notes |
+| Beszel | `beszel.<DOMAIN_BASE>` | Host + per-container resource history and alerts |
+| Authentik | `auth.<DOMAIN_BASE>` | Single sign-on / forward auth |
+| Traefik | `traefik.<DOMAIN_BASE>` | Reverse proxy, TLS, container discovery |
+| Immich | `immich.<DOMAIN_BASE>` | Photo/video library with mobile backup |
+| Jellyfin | `jellyfin.<DOMAIN_BASE>` | Media streaming (direct play; software transcode only) |
+| Nextcloud | `nextcloud.<DOMAIN_BASE>` | Files, calendar, mail |
+| Collabora | internal only | Nextcloud document editor (proxied by Nextcloud) |
+| ONLYOFFICE | `office.<DOMAIN_BASE>` | Heavier alternative document editor |
+| Vaultwarden | `vaultwarden.<DOMAIN_BASE>` | Password manager |
+| Stirling PDF | `pdf.<DOMAIN_BASE>` | Local PDF tools (behind Authentik) |
+| AI (Open WebUI + Ollama) | `ai.<DOMAIN_BASE>` | Local LLM chat with built-in web search (behind Authentik) |
+| OctoPrint | `octoprint.<DOMAIN_BASE>` | 3D printer management |
+| Pi-hole | `pihole.<DOMAIN_BASE>` | DNS, ad-blocking, DHCP (host network) |
+| Minecraft | `minecraft.<DOMAIN_BASE>:25565` | Java Edition server (not HTTP, no Traefik) |
+| Tailscale | — | VPN and LAN subnet routing |
+| Scheduler bot | — | Discord scheduling bot |
+| cert-renew | — | Automatic leaf certificate renewal |
+| Watchtower | — | Automatic image updates (label-controlled) |
 
-- Pi-hole has `network_mode: host` — it shares the Pi's real network stack
-  directly. No container IP, no docker network membership.
-- Its web UI listens on `127.0.0.1:8081` on the host (moved off :80, since
-  Traefik already owns that). DNS (53), DHCP (67), and NTP (123) bind
-  directly on the host's real interfaces, same as if you'd installed Pi-hole
-  without Docker at all.
-- Traefik can't auto-discover it via docker labels (host-networked
-  containers have no docker-network IP to route to), so
-  `traefik/dynamic/pihole.yml` defines a static route to
-  `http://host.docker.internal:8081` instead. `host.docker.internal` is
-  resolved via the `extra_hosts: host-gateway` entry on the traefik service.
-- **This means Pi-hole doesn't have a separate IP from the Pi itself
-  anymore.** Every `*.home.arpa` name — including `pihole.home.arpa` —
-  resolves to the same one address: the Raspberry Pi's normal LAN IP.
-  There's no separate "Pi-hole IP" to track.
+Service state lives in named Docker volumes, with two deliberate exceptions: Immich's library and Jellyfin's media are host bind mounts (`IMMICH_UPLOAD_LOCATION`, `JELLYFIN_MEDIA_PATH`) so you can point them at an external disk and back them up with normal tools.
 
-### A Raspberry Pi OS gotcha this setup will hit
+## Single sign-on
 
-Raspberry Pi OS (and most Debian/Ubuntu) ships `systemd-resolved`, which by
-default already listens on port 53. Pi-hole (now host-networked) needs that
-port and will fail to start until it's freed. `scripts/setup.sh` checks for
-this and stops with instructions before it becomes a confusing container
-crash-loop; the fix is:
+Authentik is the login for services that have no account system of their own. It is applied per service by adding a middleware label in `docker-compose.yml`; the forward-auth provider is defined in `traefik/dynamic/authentik.yml` and is inert until a router references it.
+
+- **Fronted by Authentik:** Glance, Stirling PDF, AI (Open WebUI). Open WebUI has its own accounts but trusts Authentik's `X-authentik-email` header, so the single login covers it too.
+- **OIDC providers pre-created** (app side needs a one-time manual step): Immich, Nextcloud, Jellyfin, Beszel. Credentials are seeded into `.env`.
+- **Cannot be integrated:** Pi-hole, Vaultwarden, OctoPrint. The Traefik dashboard is deliberately left on basic auth so it still works if Authentik is down.
+- **Keep native logins:** Immich, Jellyfin, Nextcloud and Vaultwarden — their mobile/desktop clients authenticate directly and would break behind a browser redirect.
+
+If a service is only ever opened in a browser and has weak or no auth of its own, it is a good forward-auth candidate. Do not blanket-apply the middleware: anything a client calls directly, or that another service talks to server-to-server, will break.
+
+## Monitoring
+
+**Beszel** is the monitoring stack (replacing Prometheus, Grafana, Uptime Kuma and four exporters). The hub dials a host-networked agent over a unix socket in a shared volume. The agent reads the Docker socket, so every container on the host is monitored automatically with no per-service config.
+
+**Glance** is the dashboard. Its `monitor` widgets use a `url` (the link you click) and a `check-url` (what is actually probed). `check-url` targets the container directly over the `web` network by service name and internal port — containers don't resolve `*.home.arpa`, so probing the public URL would always fail. The trade-off is that these checks report "the app is up", not "the ingress path works".
+
+## Certificate renewal
+
+The leaf certificate lasts 825 days. The `cert-renew` service checks daily and reissues it once it is inside its renewal window (`CERT_RENEW_BEFORE_DAYS`, default 30), then rewrites a marker file in Traefik's dynamic directory to trigger a reload. It never touches the root CA, so renewals are invisible to clients.
 
 ```
+./scripts/maintenance/renew-certs.sh --check    # how long is left, change nothing
+./scripts/maintenance/renew-certs.sh            # renew only if inside the window
+./scripts/maintenance/renew-certs.sh --force    # renew now
+```
+
+When you add a new subdomain, add it to the SAN list in `scripts/05_setup-ca.sh` — renewal reissues whatever that list says.
+
+## Performance notes
+
+This box is an 8 GB Pi 5 running ~26 containers. A few things are worth understanding:
+
+- **The memory cgroup is disabled by default** (`cgroup_disable=memory`). This makes `docker stats` report `0B` and means `deploy.resources.limits.memory` is silently ignored. `scripts/maintenance/tune-host-memory.sh --apply` enables it (plus zram and swappiness) and requires a reboot.
+- **Minecraft** splits heap into `MINECRAFT_INIT_MEMORY`/`MINECRAFT_MAX_MEMORY` rather than a single `MEMORY`, so an idle server doesn't hold the full ceiling in RAM.
+- **ONLYOFFICE** is the heaviest service (~1–1.5 GB idle, upstream asks for 4 GB). It duplicates Collabora, which does the same job for ~56 MB — run only one.
+- **Jellyfin** cannot hardware-transcode on a Pi 5 (no VAAPI render node), so plan on direct play or pre-transcoding.
+- **Ollama** runs models on the CPU, so only small ones are realistic — `qwen3:1.7b` is the default. It unloads the model after 5 minutes idle so an idle dashboard isn't holding ~1.5 GB of RAM. To switch models, set `OLLAMA_MODEL` in `.env`, run `scripts/07_setup-ai.sh`, then pick it in Open WebUI.
+
+## Setup
+
+On a fresh Pi with no Docker, run `./scripts/00_host-prep.sh` first.
+
+1. Copy `.env.example` to `.env` and fill in every value, especially the passwords and `LOCAL_SUBNET`. Leave the blank credential values (`BESZEL_SYSTEM_USER`/`BESZEL_TOKEN`/`BESZEL_KEY` and the `*_OIDC_*` pairs) empty — the setup scripts generate them. Set `MINECRAFT_EULA=TRUE` to start the Minecraft server.
+2. Run `./scripts/01_setup.sh` (add `--with-firewall` to also apply UFW rules). It checks prerequisites, detects the LAN IP, creates the media directories, pre-configures Beszel and Authentik, generates the CA and cert, brings the stack up, seeds Pi-hole, and pulls the Ollama model. It is safe to re-run.
+3. Download and trust `rootCA.pem` on every device (served at `https://glance.<DOMAIN_BASE>/assets/rootCA.pem`).
+4. Point your devices' DNS at Pi-hole — either from your router's DHCP settings, or let Pi-hole's own DHCP take over (turn the router's DHCP off first).
+5. Complete the first-run steps that can't be scripted:
+   - Create the **Authentik** admin account at `https://auth.<DOMAIN_BASE>/if/flow/initial-setup/`.
+   - Create your **Beszel** account, then `docker compose restart beszel` once to attach the system.
+   - Run **Jellyfin**'s setup wizard and add libraries; create the first **Immich** account and turn off Settings → Machine Learning.
+   - Open `https://ai.<DOMAIN_BASE>` and sign in with Authentik — the first account becomes Open WebUI's admin. The Ollama model was already pulled by `01_setup.sh`.
+6. Finish the optional OIDC integrations (Immich, Nextcloud, Jellyfin, Beszel) using the credentials already in `.env`.
+7. Open `https://glance.<DOMAIN_BASE>`.
+
+### Raspberry Pi OS gotcha
+
+Raspberry Pi OS ships `systemd-resolved`, which usually already holds port 53. Pi-hole (host-networked) needs it. `01_setup.sh` detects this and stops with instructions. The fix:
+
+```sh
 sudo sed -i 's/#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
 sudo rm -f /etc/resolv.conf
 echo 'nameserver 127.0.0.1' | sudo tee /etc/resolv.conf
 sudo systemctl restart systemd-resolved
 ```
 
-## Setup order
+## Troubleshooting
 
-**Fresh Raspberry Pi, Docker not installed yet?** Run `./scripts/host-prep.sh`
-first.
+A blank page or connection error on a `*.home.arpa` address is a **DNS** problem, not a TLS problem. A cert-trust issue shows a full warning page instead. In order:
 
-1. Copy `.env.example` to `.env` and fill in every value — especially the
-   passwords/tokens and `LOCAL_SUBNET`.
-2. Run `./scripts/setup.sh` (add `--with-firewall` if you also want the UFW
-   rules applied). This checks Docker's installed, checks port 53 is free,
-   generates the cert, brings the stack up, and seeds Pi-hole. If it stops
-   partway with an error (systemd-resolved, Docker missing, etc.), fix that
-   one thing and re-run it — it's safe to run more than once. Or run the
-   pieces by hand:
-   1. Generate the local CA and certificate:
-      ```
-      DOMAIN_BASE=home.arpa TAILSCALE_IP=100.x.x.x ./scripts/generate-ca.sh
-      ```
-      (`TAILSCALE_IP` is optional — set it to this box's Tailscale IP so the
-      cert also validates when you connect by raw IP over the tailnet.)
-      This writes `traefik/certs/rootCA.pem` (also served at
-      `https://portal.home.arpa/cert/rootCA.pem` for one-click download once
-      the stack is up) and `traefik/certs/home.arpa.{crt,key}` (used by
-      Traefik, stays on the server).
-   2. Bring the stack up: `docker compose up -d` — do this *after* step (i),
-      since Traefik reads `traefik/certs/home.arpa.{crt,key}` at startup and
-      will fail to start if they don't exist yet.
-   3. Seed Pi-hole's blocklists (a fresh Pi-hole has zero adlists until you
-      do this): `./scripts/pihole-setup.sh`
-3. Find the Pi's LAN IP: `hostname -I` on the Pi (first address shown).
-4. Download and trust `rootCA.pem` on every device — either from the portal
-   once DNS works (step 6), or right now via
-   `https://<pi's-LAN-IP>/cert/rootCA.pem` (your browser will warn about the
-   cert being untrusted at this URL, since you haven't trusted it yet —
-   that's expected the first time; proceed past the warning just this once
-   to grab the file).
-5. In Pi-hole (`https://<pi's-LAN-IP>/admin`, or `https://pihole.home.arpa`
-   once DNS resolves) → **Local DNS → DNS Records**, point every
-   `*.home.arpa` name at that same LAN IP — `portal`, `vaultwarden`,
-   `octoprint`, `pihole`, `nextcloud`, `grafana`, `status`, `traefik`,
-   `prometheus`. They all point at the one IP.
-6. Point your devices' DNS at Pi-hole:
-   - Easiest: let your router hand out Pi-hole's IP as the DNS server via
-     its own DHCP (edit the router's DHCP settings).
-   - Or let Pi-hole's own DHCP (enabled in `.env`) take over — but only if
-     you turn your router's DHCP server **off** first. Don't run both at
-     once, they'll fight over IP assignment.
-   - To test immediately without waiting on DHCP renewal, add temporary
-     `/etc/hosts` entries on one device (e.g. your Mac:
-     `sudo nano /etc/hosts`, add lines like
-     `<pi's-LAN-IP> portal.home.arpa`) for each hostname. This bypasses DNS
-     entirely so you can confirm TLS/Traefik work while you sort out DHCP
-     separately.
-7. Add your first monitors in Uptime Kuma (`https://status.home.arpa`) —
-   point it at the same six HTTPS URLs the blackbox-exporter checks, listed
-   in `monitoring/prometheus/prometheus.yml`.
-8. Visit `https://portal.home.arpa`.
+1. Does the name resolve? `nslookup glance.<DOMAIN_BASE>`.
+2. Does the IP work? Try `https://<pi's-LAN-IP>` (past the cert warning).
+3. Still stuck? `docker compose ps`, then `docker compose logs traefik pihole`.
 
-## Diagnosing "blank page / can't connect"
+## Adding a service
 
-If a `*.home.arpa` address gives a blank page or a browser-level connection
-error (not a certificate warning page), that's a **DNS problem, not a TLS
-problem** — the hostname isn't resolving to anything yet. A cert-trust issue
-looks different: you'd see a full warning page ("this connection is not
-private"), not a blank one. Work through this order:
+1. `docker-compose.yml` — the service block with its Traefik labels, plus any volumes at the top.
+2. `docker-compose.yml` — one line in Pi-hole's `FTLCONF_dns_hosts`.
+3. `scripts/05_setup-ca.sh` — a `DNS.n` entry in the SAN list, then re-run it and `docker compose restart traefik`.
+4. `glance/glance.yml` — a site in the shared `core-sites`/`app-sites` anchors and a bookmark. Use a `check-url` pointing at the container, not the public URL.
+5. Optional: add `- "traefik.http.routers.<name>.middlewares=authentik@file"` if it has no login of its own — but only if nothing but a browser calls it.
 
-1. Does the hostname resolve at all? `nslookup portal.home.arpa` (or
-   `dig portal.home.arpa`) from the device having trouble. If it fails,
-   that device either isn't using Pi-hole as its DNS server yet, or Pi-hole
-   doesn't have the Local DNS Record set (steps 5-6 above).
-2. Does the IP work directly? Try `https://<pi's-LAN-IP>` — if that loads
-   (past a cert warning, since SNI-based routing to the portal needs the
-   Host header, so this mostly tests connectivity/TLS rather than the
-   portal specifically), Traefik and certs are fine and it's purely DNS.
-3. Still stuck? `docker compose ps` on the Pi to confirm every container is
-   `Up`/`healthy`, and `docker compose logs traefik pihole` for errors.
-
-## Resolving *.home.arpa only when Tailscale is connected
-
-If you want `*.home.arpa` to resolve on a device (like a laptop) only while
-it's connected to Tailscale — not as a permanent DNS change on your router —
-use Tailscale's **Split DNS** feature. It still needs a real DNS server to
-answer the queries (that's still Pi-hole), Split DNS just controls *when and
-how* a device reaches it. Setup, after `docker compose up -d` picks up the
-`tailscale` service changes:
-
-1. **Approve the subnet route.** The `tailscale` container now advertises
-   your LAN (`LOCAL_SUBNET` from `.env`) so tailnet devices can reach
-   Pi-hole through the tunnel. This needs one manual approval: open the
-   [Tailscale admin console](https://login.tailscale.com/admin/machines),
-   find `raspi-server`, and approve its advertised route under
-   **Edit route settings**. Nothing routes until you do this.
-2. **Add Split DNS.** In the
-   [DNS settings page](https://login.tailscale.com/admin/dns), add a
-   nameserver: the Pi's actual **LAN IP** (e.g. `192.168.1.32` — find it with
-   `hostname -I` on the Pi), restricted to the domain `home.arpa`. Don't use
-   any `100.x.x.x` Tailscale IP here — Pi-hole isn't a tailnet device itself,
-   it's reachable *through* the subnet route you just approved, so the
-   nameserver needs to be its real LAN IP.
-3. **Verify** from your Mac: `nslookup portal.home.arpa` should now return
-   the Pi's LAN IP, whether you're on the home Wi-Fi or fully remote.
-
-Worth knowing: this only covers devices actually running Tailscale. Anything
-else on your network (smart TVs, guests, a phone with Tailscale off) won't
-get ad-blocking or resolve these names unless you *also* point your router's
-DHCP at Pi-hole directly. That's a separate, optional step — skip it if
-Tailscale-only resolution on your own devices is genuinely all you want.
-
-## Known trade-offs, worth knowing about
-
-- **The Tailscale subnet router needs IP forwarding on the host.** The
-  compose file sets `net.ipv4.ip_forward=1` via `sysctls:`, which works on
-  most modern kernels, but isn't guaranteed depending on your host's config.
-  If devices still can't reach the LAN through Tailscale after approving the
-  route, check on the Pi: `sudo sysctl net.ipv4.ip_forward` should print `1`.
-  If it's `0`, set it directly on the host instead:
-  `sudo sysctl -w net.ipv4.ip_forward=1`, and make it persist across reboots
-  by adding `net.ipv4.ip_forward=1` to `/etc/sysctl.d/99-tailscale.conf`.
-- **Self-signed CA, not a public CA.** Every `*.home.arpa` cert is signed by
-  a CA you generated yourself. That's the right call with no public domain,
-  but it means every device needs `rootCA.pem` imported once, and the cert
-  needs manual renewal (`generate-ca.sh` re-run) before it expires in ~825
-  days — nothing rotates this automatically the way Let's Encrypt would.
-- **Blackbox-exporter skips TLS chain verification** (`insecure_skip_verify:
-  true` in `monitoring/prometheus/blackbox.yml`) so it doesn't need the CA
-  mounted in. It still reports real cert-expiry dates. It also resolves
-  every `*.home.arpa` target via `extra_hosts` pointing at the Docker host
-  directly, since containers don't use Pi-hole as their DNS resolver - so
-  these health checks work independent of whatever DNS state your LAN is in.
-- **Collabora (Nextcloud's office suite)** is deployed but not exposed
-  through Traefik — it wasn't in your required browser-access list. It's
-  reachable from Nextcloud internally for document editing. Say the word if
-  you want it public with its own subdomain and cert too.
-- **Grafana anonymous access is scoped to Viewer** on the whole default org,
-  which is what makes the no-login embed on the portal possible. That also
-  means anyone who can reach `grafana.home.arpa` (or the portal) can view
-  those dashboards without a password. Fine on a Tailscale-only home LAN;
-  worth revisiting if this ever gets exposed wider.
-- **If you change `DOMAIN_BASE` away from `home.arpa`**, update it in four
-  more places by hand: `monitoring/prometheus/prometheus.yml` (blackbox
-  target URLs), `portal/src/index.html` (Grafana iframe `src` URLs and
-  service links), `traefik/dynamic/pihole.yml` (the static route's `Host`
-  rule), and re-run `generate-ca.sh` with the new value.
-
-## Ported from the old setup.sh
-
-Your earlier `setup.sh` had some genuinely good ideas that weren't in my
-first pass — folded in here:
-
-- **`/cert/` download endpoint.** Instead of telling you to go find the cert
-  file on the server's filesystem, the portal now serves it directly at
-  `/cert/rootCA.pem`.
-- **Tailscale IP as a cert SAN.** `generate-ca.sh` now accepts an optional
-  `TAILSCALE_IP` to add as an IP SAN, so the cert validates over the tailnet
-  by raw IP too.
-- **`pihole-exporter` + real block stats.** The dashboard previously only
-  knew "is Pi-hole's admin UI reachable" via blackbox-exporter. It now scrapes
-  Pi-hole's actual block stats (queries blocked, % blocked, blocklist size) —
-  more in the spirit of "make sure it's actually blocking ads."
-- **Uptime Kuma.** Your old script scaffolded a directory for it but the
-  compose file it paired with wasn't included — added it as `status.home.arpa`,
-  a simple public up/down page that complements Grafana's deeper telemetry.
-- **A one-command `setup.sh`** that ties cert generation, `docker compose up`,
-  and Pi-hole seeding together with the same colored-output style, plus
-  `host-prep.sh` and `setup-firewall.sh` as optional extras.w
-
-One thing I deliberately did **not** carry over as-is: the old firewall step
-ran `ufw default allow incoming` before adding specific `allow` rules. That
-line means everything is open by default and the allow rules underneath it
-don't actually restrict anything — the opposite of what a firewall script is
-for. `scripts/setup-firewall.sh` here defaults to deny-incoming instead, with
-explicit allows for SSH (LAN only), Traefik's 80/443 (LAN only), Pi-hole's
-DNS/DHCP/NTP (LAN only, now that it's host-networked and needs explicit
-rules), and Tailscale. It's optional — the stack works fine without it if
-your router is already the firewall — but if you do run it, it'll actually
-restrict access.
+Beszel needs nothing: the agent discovers new containers automatically. A new non-HTTP service skips step 3 and publishes its port directly (see Minecraft).
 
 ## Layout
 
 ```
 docker-compose.yml
 .env.example
-traefik/dynamic/tls.yml        # points Traefik at the local CA cert
-traefik/dynamic/pihole.yml     # static route to host-networked Pi-hole
-traefik/certs/                 # generated by generate-ca.sh, gitignore this
-scripts/setup.sh               # one-command orchestrator
-scripts/generate-ca.sh         # local CA + cert issuance
-scripts/pihole-setup.sh        # blocklist seed + gravity pull
-scripts/setup-firewall.sh      # optional UFW lockdown
-scripts/host-prep.sh           # optional Docker install on a fresh Pi
-monitoring/prometheus/         # scrape config + blackbox probe module
-monitoring/grafana/            # datasource + dashboard auto-provisioning
-portal/src/                    # the portal page itself (plain HTML/CSS/JS)
+scripts/                      # numbered by execution order: 00 runs before setup,
+                              #   01 is the orchestrator, 02+ are its steps
+scripts/maintenance/          # run on their own, never from 01_setup.sh
+                              #   (host memory tuning, cert renewal)
+traefik/dynamic/              # tls.yml, pihole.yml, authentik.yml (file provider)
+traefik/certs/                # generated, gitignored
+glance/                       # glance.yml + themes.yml + widgets/ (dashboard config)
+glance/assets/                # i18n/theme/weather JS+CSS (tracked) + generated CA files (gitignored)
+authentik/blueprints/         # declarative SSO: providers, applications, outpost
+beszel/                       # generated config + hub SSH key (gitignored)
+nextcloud/onlyoffice.config.php
 ```

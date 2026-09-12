@@ -1,0 +1,64 @@
+# Authentik as Traefik's forward-auth providers.
+#
+# Inert until a router references it - deliberately, so attaching it before
+# Authentik is configured doesn't bounce every request to a login flow that
+# doesn't exist yet, locking you out. Setup order:
+#   1. Bring the stack up, create the admin account at
+#      https://auth.home.arpa/if/flow/initial-setup/
+#   2. In Authentik: Applications -> Providers -> Create -> "Proxy Provider",
+#      mode "Forward auth (single application)", external host set to the
+#      service you're protecting (e.g. https://pdf.home.arpa).
+#   3. Create an Application bound to that provider, add it to the built-in
+#      "authentik Embedded Outpost".
+#   4. Only then attach this middleware to that service's Traefik router:
+#        - "traefik.http.routers.<name>.middlewares=authentik@file"
+#
+# Step 4 is per-service on purpose - don't blanket-apply it. Vaultwarden,
+# Immich and others have native clients that speak their own auth and break
+# behind a browser redirect. Good candidates are browser-only services with
+# weak or no auth of their own (Stirling PDF, Glance, OctoPrint).
+
+http:
+  middlewares:
+    authentik:
+      forwardAuth:
+        # The embedded outpost inside the authentik-server container. Plain
+        # HTTP is fine here - it never leaves the "web" docker network.
+        address: "http://authentik-server:9000/outpost.goauthentik.io/auth/traefik"
+        # Passes the original Host/Proto through, so Authentik knows which
+        # application the request was for and can build correct redirects.
+        trustForwardHeader: true
+        # Copied onto the request that reaches the backend, so an app that
+        # supports header-based auth can read the signed-in identity.
+        authResponseHeaders:
+          - X-authentik-username
+          - X-authentik-groups
+          - X-authentik-entitlements
+          - X-authentik-email
+          - X-authentik-name
+          - X-authentik-uid
+          - X-authentik-jwt
+          - X-authentik-meta-jwks
+          - X-authentik-meta-outpost
+          - X-authentik-meta-provider
+          - X-authentik-meta-app
+          - X-authentik-meta-version
+
+  services:
+    # The embedded outpost handles the OAuth callback itself. The path suffix
+    # is required; sending this request to the Authentik server root returns
+    # HTTP 400 after a successful login. Single-application providers return
+    # to the protected host, so every protected host needs this route.
+    authentik-outpost:
+      loadBalancer:
+        servers:
+          - url: "http://authentik-server:9000/outpost.goauthentik.io"
+
+  routers:
+    authentik-outpost:
+      rule: "(Host(`home.arpa`) || Host(`glance.home.arpa`) || Host(`pdf.home.arpa`) || Host(`ai.home.arpa`)) && PathPrefix(`/outpost.goauthentik.io/`)"
+      priority: 1000
+      entrypoints:
+        - websecure
+      service: authentik-outpost
+      tls: {}

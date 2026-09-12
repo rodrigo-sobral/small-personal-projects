@@ -1,0 +1,132 @@
+# Theme configuration for the Glance dashboard.
+#
+# Included from glance.yml via:
+#     theme:
+#       $include: themes.yml
+#
+# The first block is the default theme; every entry under `presets` is offered
+# in the theme picker. Preset keys are the theme identifiers (also stored in the
+# `theme` cookie), so rename them with care - an existing browser selection
+# falls back to the default if its key disappears.
+#
+# Presets are sorted from darkest to brightest by the background colour's
+# lightness (the third HSL number). The community themes are named after
+# Glance's own docs/themes.md.
+
+# --- default theme --------------------------------------------------------
+background-color: 222 25 11
+primary-color: 172 72 56
+contrast-multiplier: 1.12
+# Bilingual prose pairs use .i18n spans toggled by html[data-lang].
+custom-css-file: /assets/i18n.css
+
+presets:
+  # --- darkest ------------------------------------------------------------
+  tucan: # lightness 6
+    background-color: 50 1 6
+    primary-color: 24 97 58
+    negative-color: 209 88 54
+  phosphor: # lightness 7
+    background-color: 145 20 7
+    primary-color: 135 90 63
+    positive-color: 135 90 63
+    negative-color: 355 90 66
+    contrast-multiplier: 1.22
+  solar-flare: # lightness 10
+    background-color: 285 25 10
+    primary-color: 24 96 61
+    positive-color: 70 85 56
+    negative-color: 345 86 65
+  deep-ocean: # lightness 10
+    background-color: 202 42 10
+    primary-color: 191 88 61
+    positive-color: 160 74 53
+    negative-color: 348 82 64
+  control-room: # lightness 11
+    background-color: 222 25 11
+    primary-color: 172 72 56
+    positive-color: 148 54 55
+    negative-color: 2 78 60
+  ultraviolet: # lightness 11
+    background-color: 265 35 11
+    primary-color: 286 92 72
+    positive-color: 132 67 58
+    negative-color: 352 85 68
+  neon-pink: # lightness 11
+    background-color: 240 27 11
+    contrast-multiplier: 1.5
+    primary-color: 321 100 71
+    positive-color: 165 78 51
+    negative-color: 360 100 71
+  kanagawa-dark: # lightness 14
+    background-color: 240 13 14
+    primary-color: 51 33 68
+    negative-color: 358 100 68
+    contrast-multiplier: 1.2
+
+  # --- mid-dark -----------------------------------------------------------
+  catppuccin-mocha: # lightness 15
+    background-color: 240 21 15
+    contrast-multiplier: 1.2
+    primary-color: 217 92 83
+    positive-color: 115 54 76
+    negative-color: 347 70 65
+  teal-city: # lightness 15
+    background-color: 225 14 15
+    primary-color: 157 47 65
+    contrast-multiplier: 1.1
+  gruvbox-dark: # lightness 16
+    background-color: 0 0 16
+    primary-color: 43 59 81
+    positive-color: 61 66 44
+    negative-color: 6 96 59
+  catppuccin-macchiato: # lightness 18
+    background-color: 232 23 18
+    contrast-multiplier: 1.2
+    primary-color: 220 83 75
+    positive-color: 105 48 72
+    negative-color: 351 74 73
+  camouflage: # lightness 20
+    background-color: 186 21 20
+    contrast-multiplier: 1.2
+    primary-color: 97 13 80
+  dracula: # lightness 21
+    background-color: 231 15 21
+    primary-color: 265 89 79
+    contrast-multiplier: 1.2
+    positive-color: 135 94 66
+    negative-color: 0 100 67
+  catppuccin-frappe: # lightness 23
+    background-color: 229 19 23
+    contrast-multiplier: 1.2
+    primary-color: 222 74 74
+    positive-color: 96 44 68
+    negative-color: 359 68 71
+  shades-of-purple: # lightness 25
+    background-color: 243 33 25
+    contrast-multiplier: 1.2
+    primary-color: 50 100 49
+    positive-color: 98 82 71
+    negative-color: 12 77 52
+
+  # --- light --------------------------------------------------------------
+  peachy: # lightness 77, light
+    light: true
+    background-color: 28 40 77
+    primary-color: 155 100 20
+    negative-color: 0 100 60
+    contrast-multiplier: 1.1
+    text-saturation-multiplier: 0.5
+  catppuccin-latte: # lightness 95, light
+    light: true
+    background-color: 220 23 95
+    contrast-multiplier: 1.0
+    primary-color: 220 91 54
+    positive-color: 109 58 40
+    negative-color: 347 87 44
+  arctic-paper: # lightness 96, light
+    light: true
+    background-color: 204 28 96
+    primary-color: 211 72 36
+    positive-color: 154 48 34
+    negative-color: 353 67 47

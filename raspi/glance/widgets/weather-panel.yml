@@ -1,0 +1,14 @@
+# Interactive weather panel: current conditions, then tabs for today and the
+# next 7 days. The <div> is only a mount point - assets/weather-panel.js fetches
+# Open-Meteo in the browser and renders the panel (including its own CSS).
+- type: html
+  source: |
+    <br><div class="widget-header"><h2 class="uppercase"><span class="i18n" lang="en">Weather</span><span class="i18n" lang="pt">Meteorologia</span></h2></div>
+    <div class="widget-content">
+      <div id="glance-weather"
+           data-location="${WEATHER_LOCATION}"
+           data-units="metric"
+           data-hour-format="24h">
+        <div class="wx-status"><span class="i18n" lang="en">Loading weather…</span><span class="i18n" lang="pt">A carregar meteorologia…</span></div>
+      </div>
+    </div><br>

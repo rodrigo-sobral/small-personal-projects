@@ -1,0 +1,46 @@
+# Derived from the vetted Beszel community widgets. Shows only the hub's live
+# per-system figures - CPU, RAM and disk as reported in the systems collection's
+# `info` object - with no history request.
+#
+# NOTE - the Authorization header must carry a PocketBase *user* auth JWT
+# (BESZEL_USER_TOKEN), not the agent registration token (BESZEL_TOKEN). Beszel's
+# /api/collections/* endpoints authorize via @request.auth, which only a user
+# auth token satisfies; the agent token is opaque to the REST API and makes
+# this widget report "Beszel system '<name>' was not found.".
+#
+# To renew BESZEL_USER_TOKEN: mint a JWT signed with
+#      HMAC-SHA256( user.tokenKey + authToken.secret )
+# and claims {type:"auth", id:<userId>, collectionId:"_pb_users_auth_",
+# refreshable:true, exp:<future>}. Both secrets live in the beszel_data volume
+# (data.db: users.tokenKey, _collections options.authToken.secret).
+- type: custom-api
+  title: Host resources
+  title-url: https://beszel.${DOMAIN_BASE}
+  cache: 30s
+  url: ${BESZEL_URL}/api/collections/systems/records
+  headers:
+    Authorization: Bearer ${BESZEL_USER_TOKEN}
+    Accept: application/json
+  template: |
+    {{ $targetName := "${BESZEL_SYSTEM_NAME}" }}
+    {{ $systemID := "" }}
+    {{ $currentCPU := 0.0 }}
+    {{ $currentRAM := 0.0 }}
+    {{ $currentDisk := 0.0 }}
+    {{ range .JSON.Array "items" }}
+      {{ if eq (.String "name") $targetName }}
+        {{ $systemID = .String "id" }}
+        {{ $currentCPU = .Float "info.cpu" }}
+        {{ $currentRAM = .Float "info.mp" }}
+        {{ $currentDisk = .Float "info.dp" }}
+      {{ end }}
+    {{ end }}
+    {{ if eq $systemID "" }}
+      <p class="color-negative"><span class="i18n" lang="en">Beszel system '{{ $targetName }}' was not found.</span><span class="i18n" lang="pt">O sistema Beszel '{{ $targetName }}' não foi encontrado.</span></p>
+    {{ else }}
+      <div class="flex gap-10">
+        <div class="grow widget-content-frame padding-widget"><div class="size-h6 color-subdue">CPU</div><div class="size-h3 color-primary">{{ printf "%.1f" $currentCPU }}%</div></div>
+        <div class="grow widget-content-frame padding-widget"><div class="size-h6 color-subdue">RAM</div><div class="size-h3 color-primary">{{ printf "%.1f" $currentRAM }}%</div></div>
+        <div class="grow widget-content-frame padding-widget"><div class="size-h6 color-subdue">DISK</div><div class="size-h3 color-primary">{{ printf "%.1f" $currentDisk }}%</div></div>
+      </div>
+    {{ end }}

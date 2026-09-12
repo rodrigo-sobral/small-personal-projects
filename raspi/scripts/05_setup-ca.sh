@@ -13,16 +13,21 @@
 # Set TAILSCALE_IP to also cover that IP as a SAN, so the cert still
 # validates when you hit the box by its raw Tailscale IP instead of a
 # home.arpa hostname (e.g. before you've set up split-DNS over Tailscale):
-#   TAILSCALE_IP=100.x.x.x ./scripts/generate-ca.sh
+#   TAILSCALE_IP=100.x.x.x ./scripts/05_setup-ca.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOMAIN_BASE="${DOMAIN_BASE:-home.arpa}"
 TAILSCALE_IP="${TAILSCALE_IP:-}"
-OUT_DIR="$SCRIPT_DIR/../traefik/certs"
 DAYS_CA=3650
 DAYS_CERT=825   # keep under browser max lifetime for a leaf cert
+
+# Output locations default to the repo layout, but are overridable so the
+# cert-renew container can reuse this script unmodified with just the two
+# directories it needs bind-mounted (see scripts/maintenance/renew-certs.sh).
+OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/../traefik/certs}"
+GLANCE_ASSETS_DIR="${GLANCE_ASSETS_DIR:-$SCRIPT_DIR/../glance/assets}"
 
 mkdir -p "$OUT_DIR"
 cd "$OUT_DIR"
@@ -60,12 +65,18 @@ DNS.3 = vaultwarden.${DOMAIN_BASE}
 DNS.4 = octoprint.${DOMAIN_BASE}
 DNS.5 = pihole.${DOMAIN_BASE}
 DNS.6 = nextcloud.${DOMAIN_BASE}
-DNS.7 = portal.${DOMAIN_BASE}
-DNS.8 = grafana.${DOMAIN_BASE}
-DNS.9 = prometheus.${DOMAIN_BASE}
-DNS.10 = traefik.${DOMAIN_BASE}
-DNS.11 = status.${DOMAIN_BASE}
+DNS.7 = traefik.${DOMAIN_BASE}
+DNS.8 = auth.${DOMAIN_BASE}
+DNS.9 = immich.${DOMAIN_BASE}
+DNS.10 = jellyfin.${DOMAIN_BASE}
+DNS.11 = pdf.${DOMAIN_BASE}
+DNS.12 = beszel.${DOMAIN_BASE}
+DNS.13 = glance.${DOMAIN_BASE}
+DNS.14 = office.${DOMAIN_BASE}
+DNS.15 = ai.${DOMAIN_BASE}
 EOF
+# No entry for minecraft.${DOMAIN_BASE}: the Minecraft protocol isn't TLS and
+# doesn't go through Traefik, so it has a Pi-hole DNS record but no cert.
 
 if [[ -n "$TAILSCALE_IP" ]]; then
   echo "IP.1 = ${TAILSCALE_IP}" >> san.cnf
@@ -81,10 +92,34 @@ openssl x509 -req -in home.arpa.csr -CA rootCA.pem -CAkey rootCA.key \
 
 rm -f home.arpa.csr san.cnf
 
-echo "==> Publishing rootCA.pem to the portal (served at /cert/rootCA.pem)"
-PORTAL_CERT_DIR="$SCRIPT_DIR/../portal/src/cert"
-mkdir -p "$PORTAL_CERT_DIR"
-cp rootCA.pem "$PORTAL_CERT_DIR/rootCA.pem"
+# Glance serves ./glance/assets at /assets/, which is how devices download the CA
+echo "==> Publishing rootCA.pem to Glance (served at /assets/rootCA.pem)"
+mkdir -p "$GLANCE_ASSETS_DIR"
+# Replace through the directory rather than overwriting the destination. This
+# also works when a previous cert-renew container run left the old file
+# owned by root.
+cp rootCA.pem "$GLANCE_ASSETS_DIR/rootCA.pem.tmp"
+mv -f "$GLANCE_ASSETS_DIR/rootCA.pem.tmp" "$GLANCE_ASSETS_DIR/rootCA.pem"
+
+# Recorded so the date is visible on Glance's Setup page. The cert-renew
+# service reads the certificate itself rather than this file, so this is
+# purely informational.
+CERT_EXPIRY="$(openssl x509 -in home.arpa.crt -noout -enddate | cut -d= -f2)"
+cat > "$GLANCE_ASSETS_DIR/cert-expiry.txt.tmp" <<EOF
+Leaf certificate for *.${DOMAIN_BASE}
+  expires:     ${CERT_EXPIRY}
+  regenerated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+Renewal is automatic: the 'cert-renew' service checks daily and reissues this
+leaf once it's inside its renewal window, then nudges Traefik to reload it.
+To force one now:
+  ./scripts/maintenance/renew-certs.sh --force
+
+The root CA is separate and good for ${DAYS_CA} days from creation. Renewing the
+leaf does NOT touch it, which is why your devices only ever install rootCA.pem
+once - no matter how many times the leaf rotates.
+EOF
+mv -f "$GLANCE_ASSETS_DIR/cert-expiry.txt.tmp" "$GLANCE_ASSETS_DIR/cert-expiry.txt"
 
 echo ""
 echo "Done. Files written to $OUT_DIR:"
@@ -92,6 +127,11 @@ echo "  rootCA.pem       <- import this on every client device"
 echo "  rootCA.key       <- keep private, only needed to reissue certs"
 echo "  home.arpa.crt    <- used by Traefik"
 echo "  home.arpa.key    <- used by Traefik"
+echo ""
+echo "Leaf certificate expires: ${CERT_EXPIRY}"
+echo "The cert-renew service reissues this automatically before it lapses."
+echo "If you ran this by hand, reload Traefik so it picks up the new file:"
+echo "  docker compose restart traefik"
 echo ""
 echo "Point every *.${DOMAIN_BASE} name at Pi-hole (or your router) via Local DNS Records"
 echo "so browsers resolve them to your server's LAN IP."
